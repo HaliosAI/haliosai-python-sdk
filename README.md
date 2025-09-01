@@ -2,40 +2,21 @@
 
 [![PyPI version](https://badge.fury.io/py/haliosai.svg)](https://badge.fury.io/py/haliosai)
 [![Python Support](https://img.shields.io/pypi/pyversions/haliosai.svg)](https://pypi.org/project/haliosai/)
-[![License: MIT### Error Handling
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-```python
-from haliosai import guarded_chat_completion
-
-@guarded_chat_completion(app_id="your-app-id")
-async def protected_llm_call(messages):
-    return await llm_call(messages)
-
-try:
-    response = await protected_llm_call(messages)
-except ValueError as e:
-    if "blocked by guardrails" in str(e):
-        print(f"Content blocked: {e}")
-        # Handle blocked content appropriately
-    else:
-        raise
-```lds.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-**HaliosAI** is a powerful Python SDK for integrating AI guardrails with Large Language Model (LLM) applications. It provides simple patching, parallel processing, streaming support, and multi-agent configurations to help you build safer AI applications.
+**AI agents break in subtle ways.** HaliosAI is a lightweight Python SDK that helps you ship reliable AI agents faster. It offers offline and online evaluation, runtime guardrails, streaming response checks, parallel processing, and multi-agent configurations. It integrates with a single-line decorator around your existing agent code and plugs into agentic frameworks for seamless adoption.
 
 ## Features
 
-- 🛡️ **Easy Integration**: Simple decorators and patchers for existing LLM code
-- ⚡ **Parallel Processing**: Run guardrails and LLM calls simultaneously for optimal performance
+- 🛡️ **Easy Integration**: Simple decorators and patchers for existing AI agent code
+- ⚡ **Parallel Processing**: Run guardrails and agent calls simultaneously for optimal performance
 - 🌊 **Streaming Support**: Real-time guardrail evaluation for streaming responses
 - 🤖 **Multi-Agent Support**: Per-agent guardrail profiles for complex AI systems
 - 🔧 **Framework Support**: Built-in support for OpenAI, Anthropic, and OpenAI Agents
 - 📊 **Detailed Timing**: Performance metrics and execution insights
 - 🚨 **Violation Handling**: Automatic blocking and detailed error reporting
 
-## Quick Start
-
-### Installation
+## Installation
 
 ```bash
 pip install haliosai
@@ -49,18 +30,23 @@ pip install haliosai[agents]        # For OpenAI Agents support
 pip install haliosai[all]           # For all providers
 ```
 
-### Basic Usage
+## Prerequisites
 
-#### Simple Decorator Pattern
+1. **Get your API key**: Visit [app.halioslabs.com](https://app.halioslabs.com) to obtain your HaliosAI API key
+2. **Create an agent**: Follow the documentation to create your first agent and configure guardrails
+3. **Keep your agent_id handy**: You'll need it for SDK integration
+
+## Quick Start
+
+### Basic Usage
 
 ```python
 import asyncio
 from haliosai import guarded_chat_completion
 
 # Basic usage with concurrent guardrail processing (default)
-@guarded_chat_completion(app_id="your-app-id")
+@guarded_chat_completion(agent_id="your-agent-id")
 async def call_llm(messages):
-    # Your LLM call here
     response = await openai_client.chat.completions.create(
         model="gpt-4",
         messages=messages
@@ -72,35 +58,75 @@ messages = [{"role": "user", "content": "Hello!"}]
 response = await call_llm(messages)
 ```
 
-#### Sequential Processing (for debugging)
+### Configuration
 
-```python
-from haliosai import guarded_chat_completion
-
-@guarded_chat_completion(
-    app_id="your-app-id", 
-    concurrent_guardrail_processing=False
-)
-async def debug_llm_call(messages):
-    # Guardrails run sequentially (easier to debug)
-    return await openai_client.chat.completions.create(
-        model="gpt-4",
-        messages=messages
-    )
+Set your API key as an environment variable:
+```bash
+export HALIOS_API_KEY="your-api-key"
 ```
 
-#### Streaming Support
+Or pass it directly:
+```python
+@guarded_chat_completion(
+    agent_id="your-agent-id",
+    api_key="your-api-key"
+)
+async def call_llm(messages):
+    # Your agent implementation
+    pass
+```
+
+## OpenAI Agents Framework Integration
+
+For native integration with OpenAI Agents framework:
 
 ```python
-from haliosai import guarded_chat_completion
+from openai import AsyncOpenAI
+from agents import Agent
+from haliosai import RemoteInputGuardrail, RemoteOutputGuardrail
 
+# Create guardrails
+input_guardrail = RemoteInputGuardrail(agent_id="your-agent-id")
+output_guardrail = RemoteOutputGuardrail(agent_id="your-agent-id")
+
+# Create agent with guardrails
+agent = Agent(
+    model="gpt-4o",
+    instructions="You are a helpful assistant.",
+    input_guardrails=[input_guardrail],
+    output_guardrails=[output_guardrail]
+)
+
+# Use the agent normally - guardrails run automatically
+client = AsyncOpenAI()
+runner = await client.beta.agents.get_agent_runner(agent)
+result = await runner.run(
+    starting_agent=agent,
+    input="Write a professional email"
+)
+```
+
+## Examples
+
+Check out the `examples/` directory for complete working examples:
+
+- **`01_basic_usage.py`** - Simple decorator usage with OpenAI
+- **`02_streaming_guardrails.py`** - Real-time streaming with guardrail evaluation  
+- **`03_tool_calling_simple.py`** - Function calling with guardrail protection
+- **`04_openai_agents_guardrails_integration.py`** - Native OpenAI Agents integration
+- **`migration_guide.py`** - Migrating from legacy SDK versions
+
+## Advanced Usage
+
+### Streaming Support
+
+```python
 @guarded_chat_completion(
-    app_id="your-app-id",
+    agent_id="your-agent-id",
     streaming_guardrails=True,
     stream_buffer_size=100
 )
 async def stream_llm_call(messages):
-    # Your streaming LLM implementation
     async for chunk in openai_client.chat.completions.create(
         model="gpt-4",
         messages=messages,
@@ -108,177 +134,69 @@ async def stream_llm_call(messages):
     ):
         yield chunk
 
-# Use streaming with real-time guardrails
+# Handle streaming events
 async for event in stream_llm_call(messages):
     if event['type'] == 'chunk':
         print(event['content'], end='')
-    elif event['type'] == 'completed':
-        print("\\nStream completed!")
+    elif event['type'] == 'violation':
+        print(f"Content blocked: {event['violations']}")
+        break
 ```
 
-### Framework Integration
-
-#### OpenAI Agents Framework
+### Performance Optimization
 
 ```python
-from haliosai import patch_openai_agents
-
-# Single agent mode
-with patch_openai_agents(app_id="your-app-id") as patcher:
-    # All OpenAI calls are automatically guarded
-    result = await runner.run(agent, message)
-```
-
-#### Multi-Agent Systems
-
-```python
-from haliosai import patch_openai_agents_multi
-
-# Configure different guardrail profiles for different agents
-agent_config = {
-    'orchestrator': {
-        'app_id': 'app-orchestrator', 
-        'description': 'Main coordination agent'
-    },
-    'translator': {
-        'app_id': 'app-translation', 
-        'description': 'Translation specialist'
-    },
-    'synthesizer': {
-        'app_id': 'app-synthesis', 
-        'description': 'Content synthesis agent'
-    }
-}
-
-with patch_openai_agents_multi(agent_config) as patcher:
-    # Different agents automatically use their configured guardrail profiles
-    result = await multi_agent_workflow()
-```
-
-#### Auto-Patch All Clients
-
-```python
-from haliosai import patch_all
-
-# Automatically patch OpenAI, Anthropic, and Agents
-guard_instance = patch_all(app_id="your-app-id")
-
-# Now all LLM calls are automatically protected
-response1 = await openai_client.chat.completions.create(...)
-response2 = await anthropic_client.messages.create(...)
-```
-
-## Configuration
-
-### Environment Variables
-
-```bash
-export HALIOS_API_KEY="your-api-key"
-export HALIOS_BASE_URL="https://api.halioslabs.com"  # Optional
-export HALIOS_LOG_LEVEL="INFO"  # Optional: DEBUG, INFO, WARNING, ERROR
-```
-
-### Programmatic Configuration
-
-```python
-from haliosai import guarded_chat_completion
-
+# Sequential processing (for debugging)
 @guarded_chat_completion(
-    app_id="your-app-id",
-    api_key="your-api-key",  # Or set HALIOS_API_KEY env var
-    base_url="https://api.halioslabs.com",  # Optional
-    concurrent_guardrail_processing=True,  # Enable parallel processing
-    streaming_guardrails=False,  # Enable for streaming use cases
-    stream_buffer_size=50,  # Characters before guardrail check
-    guardrail_timeout=5.0  # Timeout for guardrail operations
+    agent_id="your-agent-id", 
+    concurrent_guardrail_processing=False
 )
-async def configured_llm_call(messages):
+async def debug_llm_call(messages):
+    return await openai_client.chat.completions.create(...)
+
+# Custom timeout settings
+@guarded_chat_completion(
+    agent_id="your-agent-id",
+    guardrail_timeout=10.0  # Increase timeout for slow networks
+)
+async def slow_network_call(messages):
     return await openai_client.chat.completions.create(...)
 ```
 
-## Advanced Usage
-
-### Custom Response Handling
+### Error Handling
 
 ```python
-from haliosai import ParallelGuardedChat, ExecutionResult
+from haliosai import guarded_chat_completion, ExecutionResult
 
-async def advanced_llm_call():
-    async with ParallelGuardedChat(app_id="your-app-id") as guard:
-        result = await guard.guarded_call_parallel(
-            messages=[{"role": "user", "content": "Hello!"}],
-            llm_func=your_llm_function
-        )
-        
-        if result.result == ExecutionResult.SUCCESS:
-            print(f"Success! Response: {result.final_response}")
-            print(f"Timing: {result.timing}")
-        elif result.result == ExecutionResult.REQUEST_BLOCKED:
-            print(f"Request blocked: {result.request_violations}")
-        elif result.result == ExecutionResult.RESPONSE_BLOCKED:
-            print(f"Response blocked: {result.response_violations}")
-```
+@guarded_chat_completion(agent_id="your-agent-id")
+async def protected_agent_call(messages):
+    return await agent_call(messages)
 
-### Direct Client Patching
+# Better approach: Check execution result instead of catching exceptions
+result = await protected_agent_call(messages)
 
-```python
-from haliosai import patch_openai, patch_anthropic
-import openai
-import anthropic
-
-# Create guard using the new decorator syntax (or legacy guard() function)
-from haliosai import HaliosGuard
-my_guard = HaliosGuard(app_id="your-app-id")
-
-# Patch specific clients
-patch_openai(my_guard)
-patch_anthropic(my_guard)
-
-# All subsequent calls are protected
-response = await openai.AsyncOpenAI().chat.completions.create(...)
-```
-
-## Performance
-
-HaliosAI is designed for production use with minimal performance impact:
-
-- **Parallel Mode**: Guardrails run simultaneously with LLM calls, saving up to 80% of guardrail overhead
-- **Efficient Networking**: Persistent HTTP connections and optimized request handling
-- **Smart Streaming**: Configurable buffer sizes and check intervals for optimal streaming performance
-- **Context-Aware**: Intelligent agent detection for multi-agent systems
-
-## Error Handling
-
-```python
-from haliosai import guard
-
-@guard(app_id="your-app-id")
-async def protected_llm_call(messages):
-    return await llm_call(messages)
-
-try:
-    response = await protected_llm_call(messages)
-except ValueError as e:
-    if "blocked by guardrails" in str(e):
-        print(f"Content blocked: {e}")
-        # Handle blocked content appropriately
-    else:
-        raise
-```
-
-## Logging
-
-HaliosAI provides detailed logging for debugging and monitoring:
-
-```python
-import logging
-from haliosai.config import setup_logging
-
-# Configure logging
-setup_logging("DEBUG")
-
-# Or use environment variable
-# export HALIOS_LOG_LEVEL=DEBUG
+if hasattr(result, '_halios_execution_result'):
+    execution_result = result._halios_execution_result
+    
+    if execution_result.result == ExecutionResult.REQUEST_BLOCKED:
+        print(f"Request blocked: {execution_result.request_violations}")
+        # Handle blocked request appropriately
+    elif execution_result.result == ExecutionResult.RESPONSE_BLOCKED:
+        print(f"Response blocked: {execution_result.response_violations}")
+        # Handle blocked response appropriately
+    elif execution_result.result == ExecutionResult.SUCCESS:
+        print("Agent call completed successfully")
+        # Use the response normally
+else:
+    # Fallback: handle the legacy ValueError approach
+    try:
+        response = await protected_agent_call(messages)
+    except ValueError as e:
+        if "blocked by guardrails" in str(e):
+            print(f"Content blocked: {e}")
+            # Handle blocked content appropriately
+        else:
+            raise
 ```
 
 ## Requirements
@@ -293,21 +211,23 @@ setup_logging("DEBUG")
 - anthropic >= 0.25.0 (for Anthropic integration)
 - openai-agents >= 0.1.0 (for OpenAI Agents integration)
 
-## License
+## Documentation
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+- 📖 **Full Documentation**: [docs.halioslabs.com](https://docs.halioslabs.com)
+- 🚀 **Getting Started Guide**: Create agents and configure guardrails
+- 📋 **API Reference**: Complete SDK documentation
+- 💡 **Best Practices**: Performance optimization and deployment tips
 
 ## Support
 
-- 📧 Email: support@halioslabs.com
-- 📖 Documentation: https://docs.halioslabs.com
-- 🐛 Issues: https://github.com/halioslabs/haliosai-sdk/issues
-- 💬 Discussions: https://github.com/halioslabs/haliosai-sdk/discussions
+- 📧 **Email**: support@halioslabs.com
+- � **Issues**: [GitHub Issues](https://github.com/HaliosAI/haliosai-python-sdk/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/HaliosAI/haliosai-python-sdk/discussions)
 
 ## Contributing
 
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
-## Changelog
+## License
 
-See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
