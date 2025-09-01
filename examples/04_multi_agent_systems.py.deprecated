@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""
+HaliosAI SDK - Example 4: Multi-Agent Systems with Per-Agent Guardrails
+
+This example demonstrates how different agents can use different guardrail profiles.
+Each agent type gets its own agent_id and specialized guardrail configuration.
+
+Requirements:
+    pip install haliosai[agents]
+
+Environment Variables:
+    HALIOS_API_KEY: Your HaliosAI API key
+    HALIOS_BASE_URL: Your HaliosAI base URL (optional)
+    HALIOS_TRANSLATOR_AGENT_ID: Agent ID for translation guardrails  
+    HALIOS_WRITER_AGENT_ID: Agent ID for creative writing guardrails
+    HALIOS_TECH_AGENT_ID: Agent ID for technical explanation guardrails
+    OPENAI_API_KEY: Your OpenAI API key
+"""
+
+import asyncio
+import os
+
+# OpenAI Agents imports
+try:
+    from agents import Agent, Runner
+except ImportError:
+    print("❌ openai-agents not installed. Run: pip install openai-agents")
+    exit(1)
+
+# HaliosAI SDK imports
+from haliosai import patch_openai_agents_multi
+
+# Simple agent configuration - each agent gets its own guardrail profile
+AGENT_GUARDRAIL_CONFIG = {
+    'translator': {
+        'agent_id': os.getenv("HALIOS_TRANSLATOR_AGENT_ID", "demo-translator"),
+        'description': "Translation guardrails with cultural sensitivity"
+    },
+    'writer': {
+        'agent_id': os.getenv("HALIOS_WRITER_AGENT_ID", "demo-writer"),
+        'description': "Creative writing guardrails with content filtering"
+    },
+    'tech_explainer': {
+        'agent_id': os.getenv("HALIOS_TECH_AGENT_ID", "demo-tech"),
+        'description': "Technical explanation guardrails"
+    }
+}
+
+# Define simple, focused agents
+translator = Agent(
+    name="translator",
+    instructions="You are a professional translator. Translate text accurately while preserving meaning and cultural context.",
+    handoff_description="Professional translation services"
+)
+
+writer = Agent(
+    name="writer", 
+    instructions="You are a creative writer. Write engaging stories, poems, or creative content based on user requests.",
+    handoff_description="Creative writing and storytelling"
+)
+
+tech_explainer = Agent(
+    name="tech_explainer",
+    instructions="You are a technical educator. Explain complex technical concepts in simple, easy-to-understand terms.",
+    handoff_description="Technical concept explanation"
+)
+
+async def demo_individual_agents():
+    """Test each agent individually with their specific guardrails"""
+    print("🤖 Individual Agent Testing")
+    print("=" * 50)
+    
+    with patch_openai_agents_multi(AGENT_GUARDRAIL_CONFIG):
+        print("🛡️  Multi-agent guardrail profiles configured:")
+        for agent_type, config in AGENT_GUARDRAIL_CONFIG.items():
+            print(f"   • {agent_type}: {config['agent_id']}")
+        print()
+        
+        # Test each agent with appropriate tasks
+        test_cases = [
+            {
+                "agent": translator,
+                "message": "Please translate to Spanish: 'Hello, how are you today? I hope you're having a great week!'"
+            },
+            {
+                "agent": writer,
+                "message": "Write a short story about a robot learning to paint"
+            },
+            {
+                "agent": tech_explainer,
+                "message": "Explain how machine learning works in simple terms"
+            }
+        ]
+        
+        for i, test in enumerate(test_cases, 1):
+            agent = test["agent"]
+            message = test["message"]
+            
+            print(f"{i}️⃣  Testing {agent.name}")
+            print(f"🛡️  Guardrail profile: {AGENT_GUARDRAIL_CONFIG.get(agent.name, {}).get('agent_id', 'default')}")
+            print(f"📝 Task: {message[:60]}...")
+            print("-" * 40)
+            
+            try:
+                runner = Runner(agent)
+                result = await runner.run(message)
+                
+                if result.messages:
+                    response = result.messages[-1].content
+                    print(f"✅ Success! Response length: {len(response)} characters")
+                    print(f"📄 Preview: {response[:200]}...")
+                else:
+                    print("❌ No response received")
+                    
+            except ValueError as e:
+                if "blocked by guardrails" in str(e):
+                    print(f"🚫 Content blocked by {agent.name} guardrails")
+                else:
+                    print(f"❌ Error: {e}")
+            except Exception as e:
+                print(f"❌ Unexpected error: {e}")
+            
+            print()
+
+async def demo_multi_agent_workflow():
+    """Simple multi-agent workflow example"""
+    print("🔄 Multi-Agent Workflow")
+    print("=" * 50)
+    
+    # Create a coordinator agent that can hand off to specialists
+    coordinator = Agent(
+        name="coordinator",
+        instructions="""You are a helpful coordinator. For translation requests, hand off to the translator. 
+        For creative writing, hand off to the writer. For technical explanations, hand off to the tech_explainer.
+        Be clear about why you're making each handoff.""",
+        handoff_description="Coordination and task routing",
+        handoffs=[translator, writer, tech_explainer]
+    )
+    
+    with patch_openai_agents_multi(AGENT_GUARDRAIL_CONFIG):
+        print("🛡️  Multi-agent system with guardrails active")
+        print()
+        
+        # Test multi-step workflow
+        test_requests = [
+            "Translate 'Hello world' to Spanish, then write a creative story about that phrase",
+            "Explain what artificial intelligence is, then translate your explanation to Spanish"
+        ]
+        
+        for i, request in enumerate(test_requests, 1):
+            print(f"{i}️⃣  Workflow Test: {request}")
+            print("-" * 40)
+            
+            try:
+                runner = Runner(coordinator)
+                result = await runner.run(request)
+                
+                # Count agent interactions
+                agents_used = set()
+                for msg in result.messages:
+                    if msg.role == "assistant" and hasattr(msg, 'agent_name'):
+                        agents_used.add(msg.agent_name)
+                
+                print(f"✅ Workflow completed")
+                print(f"🤖 Agents involved: {', '.join(agents_used) if agents_used else 'coordinator only'}")
+                print(f"💬 Total messages: {len(result.messages)}")
+                
+                if result.messages:
+                    final_response = result.messages[-1].content
+                    print(f"📋 Final result: {final_response[:300]}...")
+                
+            except Exception as e:
+                print(f"❌ Workflow error: {e}")
+            
+            print("\n" + "=" * 50)
+
+async def main():
+    """Run multi-agent examples"""
+    print("🚀 HaliosAI Multi-Agent Systems Example")
+    print("=" * 60)
+    print("✨ Different agents use different guardrail profiles automatically")
+    print()
+    
+    await demo_individual_agents()
+    await demo_multi_agent_workflow()
+    
+    print("✨ Multi-agent example completed!")
+    print("\n💡 Key Features Demonstrated:")
+    print("• Each agent type gets its own guardrail profile (agent_id)")
+    print("• Automatic agent detection and guardrail routing")
+    print("• Multi-agent workflows with handoffs")
+    print("• Per-agent guardrail configuration")
+
+if __name__ == "__main__":
+    # Set up demo environment if real credentials not provided
+    if not os.getenv("HALIOS_API_KEY"):
+        print("⚠️  No HALIOS_API_KEY found. Set environment variables for real usage.")
+        print("   Example: export HALIOS_API_KEY=your-key")
+        print("   Using demo mode (guardrail checks will fail gracefully)\n")
+    
+    if not os.getenv("OPENAI_API_KEY"):
+        print("⚠️  No OPENAI_API_KEY found. Set this for real agent functionality.")
+        print("   Example: export OPENAI_API_KEY=your-openai-key\n")
+    
+    asyncio.run(main())

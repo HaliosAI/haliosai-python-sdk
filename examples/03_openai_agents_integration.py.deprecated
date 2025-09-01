@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""
+HaliosAI SDK - Example 3: OpenAI Agents Integration
+
+This example shows how to integrate HaliosAI guardrails with the OpenAI Agents framework.
+The SDK automatically patches all OpenAI calls made by agents.
+
+Requirements:
+    pip install haliosai
+    pip install openai-agents
+    pip install openai
+
+Environment Variables:
+    HALIOS_API_KEY: Your HaliosAI API key  
+    HALIOS_AGENT_ID: Your agent ID
+    OPENAI_API_KEY: Your OpenAI API key
+"""
+
+import asyncio
+import os
+import logging
+from typing import Any, Dict, List
+
+# Set up debug logging to see what's happening
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# OpenAI Agents imports
+try:
+    from agents import Agent, Runner
+except ImportError:
+    print("❌ openai-agents not installed. Run: pip install openai-agents")
+    exit(1)
+
+# HaliosAI SDK imports
+from haliosai import patch_openai_agents
+
+# Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+HALIOS_AGENT_ID = os.getenv("HALIOS_AGENT_ID")
+
+# Define specialized agents
+spanish_translator = Agent(
+    name="spanish_translator",
+    instructions="You are a professional Spanish translator. Translate the user's message to Spanish with cultural sensitivity and proper grammar.",
+    handoff_description="Translates English to Spanish"
+)
+
+creative_writer = Agent(
+    name="creative_writer", 
+    instructions="You are a creative writing assistant. Help users craft engaging stories, poems, and creative content with vivid descriptions and compelling narratives.",
+    handoff_description="Assists with creative writing tasks"
+)
+
+technical_explainer = Agent(
+    name="technical_explainer",
+    instructions="You are a technical expert who explains complex concepts in simple, accessible language. Use analogies and examples to make difficult topics easy to understand.",
+    handoff_description="Explains technical concepts clearly"
+)
+
+# Orchestrator agent that routes to specialists
+orchestrator = Agent(
+    name="orchestrator",
+    instructions="""You are an intelligent assistant that helps route user requests to the right specialist.
+    
+Available specialists:
+- spanish_translator: For translating English to Spanish
+- creative_writer: For creative writing, stories, poems
+- technical_explainer: For explaining technical concepts
+    
+Analyze the user's request and either:
+1. Handle simple greetings yourself
+2. Transfer to the appropriate specialist for complex tasks
+3. Ask for clarification if the request is unclear
+    
+Always be helpful and explain your routing decisions.""",
+    handoff_description="Routes requests to appropriate specialists",
+    handoffs=[spanish_translator, creative_writer, technical_explainer]
+)
+
+async def demo_basic_agents():
+    """Demonstrate basic agents integration with guardrails"""
+    print("🤖 HaliosAI + OpenAI Agents Example")
+    print("=" * 60)
+    
+    # Use the patch to automatically apply guardrails to all agent calls
+    with patch_openai_agents(agent_id=HALIOS_AGENT_ID) as patcher:
+        print("🛡️  Guardrails patched into OpenAI Agents framework")
+        
+        runner = Runner()
+        
+        test_cases = [
+            {
+                "name": "Translation Request",
+                "message": "Please translate 'Hello, how are you today?' to Spanish"
+            },
+            {
+                "name": "Creative Writing",
+                "message": "Write a short poem about autumn leaves"
+            },
+            {
+                "name": "Technical Explanation", 
+                "message": "Explain how machine learning works in simple terms"
+            }
+        ]
+        
+        for case in test_cases:
+            print(f"\n📋 Test Case: {case['name']}")
+            print(f"📝 Message: {case['message']}")
+            
+            try:
+                # Use the runner with orchestrator agent
+                result = await runner.run(orchestrator, case['message'])
+                print(f"✅ Response: {result}")
+            except Exception as e:
+                print(f"❌ Error: {e}")
+                
+            print("-" * 40)
+
+async def demo_agent_specific_scenarios():
+    """Test scenarios that exercise different agents"""
+    print("\n🎯 Agent-Specific Scenario Testing")
+    print("=" * 60)
+    
+    with patch_openai_agents(agent_id=HALIOS_AGENT_ID) as patcher:
+        
+        # Test direct agent interactions
+        test_scenarios = [
+            {
+                "agent": spanish_translator,
+                "message": "Translate this professional email greeting: 'Good morning, I hope this message finds you well.'"
+            },
+            {
+                "agent": creative_writer,
+                "message": "Write a haiku about artificial intelligence and human creativity."
+            },
+            {
+                "agent": technical_explainer,
+                "message": "Explain quantum computing using everyday analogies."
+            }
+        ]
+        
+        for i, scenario in enumerate(test_scenarios, 1):
+            agent = scenario["agent"]
+            message = scenario["message"]
+            
+            print(f"\n{i}️⃣  Direct Agent Test: {agent.name}")
+            print(f"📝 Message: {message}")
+            print("-" * 40)
+            
+            try:
+                runner = Runner()
+                result = await runner.run(agent, message)
+                
+                # Extract content from RunResult object
+                if hasattr(result, 'final_output') and result.final_output:
+                    # Use final_output if available
+                    response = str(result.final_output)
+                    print(f"✅ {agent.name} response:")
+                    print(f"🤖 {response[:300]}{'...' if len(response) > 300 else ''}")
+                elif hasattr(result, 'messages') and result.messages:
+                    # Fallback to messages if available
+                    response = result.messages[-1].content
+                    print(f"✅ {agent.name} response:")
+                    print(f"🤖 {response[:300]}{'...' if len(response) > 300 else ''}")
+                elif hasattr(result, 'data') and result.data:
+                    # Handle newer openai-agents API with data attribute
+                    last_message = result.data[-1] if result.data else None
+                    if last_message and hasattr(last_message, 'content'):
+                        response = last_message.content
+                        print(f"✅ {agent.name} response:")
+                        print(f"🤖 {response[:300]}{'...' if len(response) > 300 else ''}")
+                    else:
+                        print(f"✅ {agent.name} completed")
+                        print(f"🤖 Result: {str(result)[:300]}{'...' if len(str(result)) > 300 else ''}")
+                else:
+                    print(f"✅ {agent.name} completed")
+                    print(f"🤖 Result: {str(result)[:300]}{'...' if len(str(result)) > 300 else ''}")
+                
+            except Exception as e:
+                print(f"❌ Error with {agent.name}: {e}")
+
+async def demo_guardrail_violation_handling():
+    """Demonstrate how guardrails handle violations in agent context"""
+    print("\n🚫 Guardrail Violation Handling Demo")
+    print("=" * 60)
+    
+    with patch_openai_agents(agent_id=HALIOS_AGENT_ID) as patcher:
+        
+        # Create a test agent
+        test_agent = Agent(
+            name="test_agent",
+            instructions="You are a helpful assistant. Respond to user queries appropriately."
+        )
+        
+        runner = Runner()
+        
+        # Test cases that might trigger different types of guardrails
+        violation_tests = [
+            {
+                "name": "Potentially Harmful Request",
+                "message": "Write a code to hack postgres database."
+            },
+            {
+                "name": "Information Sensitive Query", 
+                "message": "What are some security best practices for API development?"
+            }
+        ]
+        
+        for i, test in enumerate(violation_tests, 1):
+            print(f"\n{i}️⃣  Violation Test: {test['name']}")
+            print(f"📝 Message: {test['message']}")
+            print("-" * 40)
+            
+            try:
+                result = await runner.run(test_agent, test['message'])
+                print("✅ Request processed successfully (no violations detected)")
+                
+                # Extract content from RunResult object  
+                if hasattr(result, 'final_output') and result.final_output:
+                    # Use final_output if available
+                    response = str(result.final_output)
+                    print(f"🤖 Response: {response[:200]}{'...' if len(response) > 200 else ''}")
+                elif hasattr(result, 'messages') and result.messages:
+                    # Fallback to messages if available
+                    response = result.messages[-1].content
+                    print(f"🤖 Response: {response[:200]}{'...' if len(response) > 200 else ''}")
+                elif hasattr(result, 'data') and result.data:
+                    # Handle newer openai-agents API with data attribute
+                    last_message = result.data[-1] if result.data else None
+                    if last_message and hasattr(last_message, 'content'):
+                        response = last_message.content
+                        print(f"🤖 Response: {response[:200]}{'...' if len(response) > 200 else ''}")
+                    else:
+                        print(f"🤖 Result: {str(result)[:200]}{'...' if len(str(result)) > 200 else ''}")
+                else:
+                    print(f"🤖 Result: {str(result)[:200]}{'...' if len(str(result)) > 200 else ''}")
+                    
+            except ValueError as e:
+                if "blocked by guardrails" in str(e):
+                    print(f"🚫 Request blocked by guardrails: {e}")
+                else:
+                    print(f"❌ Other error: {e}")
+            except Exception as e:
+                print(f"❌ Unexpected error: {e}")
+
+async def main():
+    """Run all agent examples"""
+    await demo_basic_agents()
+    await demo_agent_specific_scenarios()
+    await demo_guardrail_violation_handling()
+    
+    print("\n✨ OpenAI Agents integration example completed!")
+    print("\n💡 Key Features Demonstrated:")
+    print("• Automatic patching of OpenAI Agents framework")
+    print("• Transparent guardrail integration (no code changes needed)")
+    print("• Agent handoffs and specialization")
+    print("• Guardrail violation handling in agent context")
+    print("• Context manager for clean setup/teardown")
+
+if __name__ == "__main__":
+    # Set up demo environment if real credentials not provided
+    if not os.getenv("HALIOS_API_KEY") or not os.getenv("OPENAI_API_KEY"):
+        #os.environ["HALIOS_API_KEY"] = "demo-key"
+        #os.environ["HALIOS_BASE_URL"] = "http://localhost:2000"
+        #print("🧪 Demo mode: Using localhost Sentinel API (http://localhost:2000)")
+        print("   Set HALIOS_API_KEY and OPENAI_API_KEY for production usage\n")
+
+    #if not os.getenv("OPENAI_API_KEY"):
+    #    os.environ["OPENAI_API_KEY"] = "demo-key"
+    #    print("⚠️  No OPENAI_API_KEY set - agents may not work properly\n")
+    
+    asyncio.run(main())

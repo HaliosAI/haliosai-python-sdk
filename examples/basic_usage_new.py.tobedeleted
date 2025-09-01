@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""
+Basic usage examples for HaliosAI SDK
+
+This example demonstrates the core functionality of the HaliosAI SDK
+using the new unified guarded_chat_completion decorator.
+"""
+
+import asyncio
+import os
+from typing import List, Dict, Any
+
+# Import the unified decorator
+from haliosai import guarded_chat_completion
+
+# Mock LLM functions for demonstration
+async def mock_openai_call(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Mock OpenAI-style API call"""
+    await asyncio.sleep(0.1)  # Simulate API latency
+    return {
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": f"Mock response to: {messages[-1].get('content', 'No content')}"
+            }
+        }],
+        "usage": {"total_tokens": 50}
+    }
+
+async def mock_streaming_call(messages: List[Dict[str, Any]]):
+    """Mock streaming API call"""
+    response_chunks = ["Hello", " from", " HaliosAI", "! ", "Streaming", " works", " great", "."]
+    
+    for chunk in response_chunks:
+        await asyncio.sleep(0.05)  # Simulate streaming delay
+        yield {
+            "choices": [{
+                "delta": {"content": chunk}
+            }]
+        }
+
+# Example 1: Basic usage with concurrent processing (recommended)
+@guarded_chat_completion(agent_id="demo-basic")
+async def basic_llm_call(messages: List[Dict[str, Any]]):
+    """Basic LLM call with concurrent guardrail processing"""
+    return await mock_openai_call(messages)
+
+# Example 2: Sequential processing (useful for debugging)
+@guarded_chat_completion(
+    agent_id="demo-sequential",
+    concurrent_guardrail_processing=False
+)
+async def sequential_llm_call(messages: List[Dict[str, Any]]):
+    """LLM call with sequential guardrail processing (easier to debug)"""
+    return await mock_openai_call(messages)
+
+# Example 3: Streaming with real-time guardrails
+@guarded_chat_completion(
+    agent_id="demo-streaming",
+    streaming_guardrails=True,
+    stream_buffer_size=20,  # Check guardrails every 20 characters
+    stream_check_interval=0.3  # Check every 300ms
+)
+async def streaming_llm_call(messages: List[Dict[str, Any]]):
+    """Streaming LLM call with real-time guardrail evaluation"""
+    async for chunk in mock_streaming_call(messages):
+        yield chunk
+
+# Example 4: Full configuration with custom settings
+@guarded_chat_completion(
+    agent_id="demo-full-config",
+    api_key=os.getenv("HALIOS_API_KEY", "demo-key"),
+    base_url=os.getenv("HALIOS_BASE_URL", "https://api.halioslabs.com"),
+    concurrent_guardrail_processing=True,
+    streaming_guardrails=False,
+    guardrail_timeout=10.0
+)
+async def fully_configured_llm_call(messages: List[Dict[str, Any]]):
+    """Fully configured LLM call with all options specified"""
+    return await mock_openai_call(messages)
+
+async def main():
+    """Run all examples"""
+    print("🚀 HaliosAI Basic Usage Examples")
+    print("=" * 50)
+    
+    # Test messages
+    test_messages = [
+        {"role": "user", "content": "Hello! How are you today?"}
+    ]
+    
+    # Example 1: Basic concurrent processing
+    print("\n1️⃣  Basic LLM call (concurrent guardrail processing)")
+    try:
+        result = await basic_llm_call(test_messages)
+        print(f"✅ Success: {result}")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    # Example 2: Sequential processing
+    print("\n2️⃣  Sequential processing (debugging mode)")
+    try:
+        result = await sequential_llm_call(test_messages)
+        print(f"✅ Success: {result}")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    # Example 3: Streaming
+    print("\n3️⃣  Streaming with real-time guardrails")
+    try:
+        print("📡 Streaming output: ", end="")
+        async for event in streaming_llm_call(test_messages):
+            if event.get('type') == 'chunk':
+                print(event.get('content', ''), end='')
+            elif event.get('type') == 'completed':
+                print("\n✅ Stream completed successfully!")
+            elif event.get('type') == 'error':
+                print(f"\n❌ Stream error: {event.get('error')}")
+                break
+        else:
+            # If loop completed without break
+            print("\n✅ Streaming completed")
+    except Exception as e:
+        print(f"\n❌ Streaming error: {e}")
+    
+    # Example 4: Full configuration
+    print("\n4️⃣  Fully configured LLM call")
+    try:
+        result = await fully_configured_llm_call(test_messages)
+        print(f"✅ Success: {result}")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    
+    print("\n" + "=" * 50)
+    print("✨ All examples completed!")
+    
+    print("\n💡 Notes:")
+    print("- Guardrail errors are expected in demo mode")
+    print("- Set HALIOS_API_KEY environment variable for real usage")
+    print("- concurrent_guardrail_processing=True is recommended for production")
+    print("- Use concurrent_guardrail_processing=False for debugging")
+
+if __name__ == "__main__":
+    # Set up environment for demo
+    os.environ.setdefault("HALIOS_API_KEY", "demo-key")
+    os.environ.setdefault("HALIOS_BASE_URL", "https://httpbin.org/status/200")  # Mock endpoint
+    
+    asyncio.run(main())
