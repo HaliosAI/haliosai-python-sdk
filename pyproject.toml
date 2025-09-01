@@ -57,11 +57,11 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/halioslabs/haliosai-sdk"
+Homepage = "https://github.com/HaliosAI/haliosai-python-sdk"
 Documentation = "https://docs.halioslabs.com"
-Repository = "https://github.com/halioslabs/haliosai-sdk"
-Changelog = "https://github.com/halioslabs/haliosai-sdk/releases"
-"Bug Reports" = "https://github.com/halioslabs/haliosai-sdk/issues"
+Repository = "https://github.com/HaliosAI/haliosai-python-sdk"
+Changelog = "https://github.com/HaliosAI/haliosai-python-sdk/releases"
+"Bug Reports" = "https://github.com/HaliosAI/haliosai-python-sdk/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
