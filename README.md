@@ -3,7 +3,8 @@
 [![PyPI version](https://badge.fury.io/py/haliosai.svg)](https://badge.fury.io/py/haliosai)
 [![Python Support](https://img.shields.io/pypi/pyversions/haliosai.svg)](https://pypi.org/project/haliosai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-**HaliosAI : Production-ready AI agent guardrails and evaluation.**
+
+**HaliosAI : Ship Reliable AI Agents Faster!** 🚀🚀🚀
 
 HaliosAI SDK helps you catch tricky AI agent failures before they reach users. It supports both offline and live guardrail checks, streaming response validation, parallel processing, and multi-agent setups. Integration is seamless - just add a simple decorator to your code. HaliosAI instantly plugs into your agent workflows, making it easy to add safety and reliability without changing your architecture.
 
