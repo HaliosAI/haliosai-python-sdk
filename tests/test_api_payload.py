@@ -1,74 +1,138 @@
 #!/usr/bin/env python3
 """
-Test tool calls are being sent to API correctly
+Unit tests for API payload handling with tool calls
 """
-import asyncio
-import os
+import pytest
+from unittest.mock import patch, MagicMock
 from haliosai import HaliosGuard
 
-async def test_tool_calls_api_payload():
-    """Test that tool calls are being sent in the API payload"""
-    
-    guard = HaliosGuard(
-        agent_id=os.getenv("HALIOS_AGENT_ID", "demo-agent"),
-        api_key=os.getenv("HALIOS_API_KEY", "demo-key"), 
-        base_url=os.getenv("HALIOS_BASE_URL", "http://localhost:2000")
-    )
-    
-    # Test conversation with tool calls (simulate what LLM would send)
-    messages_with_tools = [
-        {
-            "role": "user",
-            "content": "Calculate the result of 15 * 8 + 42"
-        },
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "call_123",
-                    "type": "function", 
-                    "function": {
-                        "name": "calculate_math",
-                        "arguments": '{"expression":"15 * 8 + 42"}'
+
+class TestApiPayload:
+    """Unit tests for API payload handling"""
+
+    def test_tool_calls_in_payload(self):
+        """Test that tool calls are properly included in API payload"""
+        guard = HaliosGuard(
+            agent_id="test-agent",
+            api_key="test-key",
+            base_url="http://test.com"
+        )
+
+        # Test conversation with tool calls
+        messages_with_tools = [
+            {
+                "role": "user",
+                "content": "Calculate the result of 15 * 8 + 42"
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "calculate_math",
+                            "arguments": '{"expression":"15 * 8 + 42"}'
+                        }
                     }
+                ]
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_123",
+                "content": '{"result": 162}'
+            }
+        ]
+
+        # Test that extract_messages handles tool calls correctly
+        extracted = guard.extract_messages(messages_with_tools)
+        assert extracted == messages_with_tools
+
+        # Test message counting
+        assert len(extracted) == 3
+
+        # Test that tool calls are preserved
+        assistant_message = extracted[1]
+        assert assistant_message["role"] == "assistant"
+        assert assistant_message["content"] is None
+        assert "tool_calls" in assistant_message
+        assert len(assistant_message["tool_calls"]) == 1
+        assert assistant_message["tool_calls"][0]["function"]["name"] == "calculate_math"
+
+    def test_response_content_with_tool_calls(self):
+        """Test response content extraction with tool calls"""
+        guard = HaliosGuard(agent_id="test-agent")
+
+        # Mock response with tool calls
+        response_with_tools = {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_456",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"location": "San Francisco"}'
+                        }
+                    }]
                 }
-            ]
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_123",
-            "content": '{"result": 162}'
+            }]
         }
-    ]
-    
-    print("🧪 Testing API payload with tool calls...")
-    print(f"Messages being sent to API:")
-    for i, msg in enumerate(messages_with_tools):
-        print(f"   {i+1}. Role: {msg['role']}")
-        print(f"      Content: {msg.get('content')}")
-        if msg.get('tool_calls'):
-            print(f"      Tool calls: {len(msg['tool_calls'])} calls")
-            for tc in msg['tool_calls']:
-                print(f"        • {tc['function']['name']}({tc['function']['arguments']})")
-        if msg.get('tool_call_id'):
-            print(f"      Tool call ID: {msg['tool_call_id']}")
-    
-    try:
-        result = await guard.evaluate(messages_with_tools, "response")
-        print(f"\n✅ API call successful!")
-        print(f"Messages processed: {result.get('request', {}).get('message_count', 'unknown')}")
-        print(f"Content length: {result.get('request', {}).get('content_length', 'unknown')} chars")
-        print(f"Guardrails triggered: {result.get('guardrails_triggered', 0)}")
-        
-        # The key thing is that the API accepted and processed the tool calls
-        if result.get('request', {}).get('message_count', 0) == 3:
-            print("🔧 ✅ Tool calls were properly processed by the API!")
-        else:
-            print("❌ Unexpected message count - tool calls may not have been processed")
-            
-    except Exception as e:
-        print(f"❌ Error: {e}")
+
+        content = guard.extract_response_content(response_with_tools)
+        # Should create a description when there are tool calls but no content
+        assert "Assistant called tools: get_weather" in content
+
+    @pytest.mark.asyncio
+    async def test_evaluate_with_tool_calls_mock(self):
+        """Test evaluation with tool calls using mocked httpx"""
+        guard = HaliosGuard(agent_id="test-agent", api_key="test-key")
+
+        messages = [
+            {"role": "user", "content": "Calculate 2+2"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_123",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 2, "b": 2}'}
+                }]
+            }
+        ]
+
+        mock_response = {
+            "guardrails_triggered": 0,
+            "result": [],
+            "request": {"message_count": 2, "content_length": 150}
+        }
+
+        with patch('httpx.AsyncClient') as mock_client:
+            mock_response_obj = MagicMock()
+            mock_response_obj.json.return_value = mock_response
+            mock_response_obj.raise_for_status.return_value = None
+
+            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response_obj
+
+            result = await guard.evaluate(messages, "request")
+
+            assert result == mock_response
+            # Verify the API was called with the correct payload
+            call_args = mock_client.return_value.__aenter__.return_value.post.call_args
+            payload = call_args[1]['json']
+            assert payload['messages'] == messages
+            assert payload['invocation_type'] == "request"
+
+
+# Legacy integration test (kept for reference but marked as integration)
+@pytest.mark.integration
+def test_tool_calls_integration():
+    """Integration test for tool calls (requires real API)"""
+    pytest.skip("Integration test - requires real HaliosAI API connection")
+
 
 if __name__ == "__main__":
-    asyncio.run(test_tool_calls_api_payload())
+    pytest.main([__file__])

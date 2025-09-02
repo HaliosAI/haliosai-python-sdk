@@ -257,26 +257,35 @@ class HaliosGuard:
         # Handle dict response
         if isinstance(response, dict):
             if 'choices' in response:
-                content = response['choices'][0].get('message', {}).get('content', '')
-                logger.debug(f"Extracted content from dict response: {len(content)} chars")
+                message = response['choices'][0].get('message', {})
+                content = message.get('content', '')
+                if content is None:
+                    # Check for tool calls when content is None
+                    tool_calls = message.get('tool_calls', [])
+                    if tool_calls:
+                        tool_names = [call.get('function', {}).get('name', 'unknown') for call in tool_calls]
+                        content = f"Assistant called tools: {', '.join(tool_names)}"
+                    else:
+                        content = ''
+                logger.debug("Extracted content from dict response: %s chars", len(content))
                 return content
             if 'output' in response:
                 content = response['output']
-                logger.debug(f"Extracted content from output field: {len(content)} chars")
+                logger.debug("Extracted content from output field: %s chars", len(content))
                 return content
             if 'text' in response:
                 content = response['text']
-                logger.debug(f"Extracted content from text field: {len(content)} chars")
+                logger.debug("Extracted content from text field: %s chars", len(content))
                 return content
         
         # Handle string response
         if isinstance(response, str):
-            logger.debug(f"Using string response directly: {len(response)} chars")
+            logger.debug("Using string response directly: %s chars", len(response))
             return response
             
         # Fallback to string conversion
         content = str(response)
-        logger.debug(f"Converted response to string: {len(content)} chars")
+        logger.debug("Converted response to string: %s chars", len(content))
         return content
     
     async def check_violations(self, guardrail_result: Dict) -> bool:
@@ -321,7 +330,7 @@ class HaliosGuard:
                     violation_details.append(detail)
                 
                 violation_summary = "; ".join(violation_details)
-                logger.warning(f"Guardrail violations detected: {violation_summary}")
+                logger.warning("Guardrail violations detected: %s", violation_summary)
                 return True
                 
         return False
@@ -345,7 +354,7 @@ class HaliosGuard:
                 return await original_func(*args, **kwargs)
             
             total_start = time.time()
-            logger.debug(f"Starting guarded function call (parallel={self.parallel})")
+            logger.debug("Starting guarded function call (parallel=%s)", self.parallel)
             
             if self.parallel:
                 # Parallel execution: run request guardrails and LLM call simultaneously
@@ -362,7 +371,7 @@ class HaliosGuard:
                     
                     request_time = time.time() - request_start
                     llm_time = time.time() - llm_start
-                    logger.debug(f"Parallel execution completed: request={request_time:.3f}s, llm={llm_time:.3f}s")
+                    logger.debug("Parallel execution completed: request=%.3fs, llm=%.3fs", request_time, llm_time)
                     
                     # Check request violations
                     if await self.check_violations(request_result):
@@ -378,7 +387,7 @@ class HaliosGuard:
                         logger.error(error_msg)
                         raise ValueError(error_msg)
                         
-                except Exception as e:
+                except Exception:
                     # If request guardrails fail, cancel LLM task if possible
                     if not llm_task.done():
                         llm_task.cancel()
@@ -443,7 +452,7 @@ class HaliosGuard:
                 'mode': 'parallel' if self.parallel else 'sequential'
             })
             
-            logger.debug(f"Guarded function completed successfully in {total_time:.3f}s")
+            logger.debug("Guarded function completed successfully in %.3fs", total_time)
             return response
         
         return guarded_func
@@ -456,7 +465,7 @@ class HaliosGuard:
             obj: Object or class to patch
             method_name: Name of method to patch
         """
-        logger.debug(f"Patching {obj.__class__.__name__}.{method_name}")
+        logger.debug("Patching %s.%s", obj.__class__.__name__, method_name)
         original_method = getattr(obj, method_name)
         guarded_method = self.patch_function(original_method)
         setattr(obj, method_name, guarded_method)
@@ -556,7 +565,7 @@ class ParallelGuardedChat:
         self.stream_check_interval = stream_check_interval
         self.http_client = httpx.AsyncClient(timeout=30.0)
         
-        logger.debug(f"Initialized ParallelGuardedChat with agent_id={agent_id}, streaming={streaming}")
+        logger.debug("Initialized ParallelGuardedChat with agent_id=%s, streaming=%s", agent_id, streaming)
     
     async def evaluate_guardrails(self, messages: List[Dict], invocation_type: str) -> Dict:
         """
@@ -586,14 +595,14 @@ class ParallelGuardedChat:
             response.raise_for_status()
             result = response.json()
             
-            logger.debug(f"Guardrail evaluation ({invocation_type}): {result.get('guardrails_triggered', 0)} triggered")
+            logger.debug("Guardrail evaluation (%s): %s triggered", invocation_type, result.get('guardrails_triggered', 0))
             return result
             
         except httpx.HTTPError as e:
-            logger.error(f"HTTP error during guardrail evaluation: {e}")
+            logger.error("HTTP error during guardrail evaluation: %s", e)
             raise
         except Exception as e:
-            logger.error(f"Unexpected error during guardrail evaluation: {e}")
+            logger.error("Unexpected error during guardrail evaluation: %s", e)
             raise
     
     async def guarded_call_parallel(self, messages: List[Dict], llm_func: Callable, 
@@ -647,7 +656,7 @@ class ParallelGuardedChat:
                 
                 if not done:
                     # Timeout occurred
-                    logger.warning(f"Operations timed out after {self.guardrail_timeout}s")
+                    logger.warning("Operations timed out after %ss", self.guardrail_timeout)
                     for task in pending:
                         task.cancel()
                     
@@ -695,16 +704,16 @@ class ParallelGuardedChat:
                             llm_response = result
                             llm_done = True
                             llm_time = time.time() - llm_start
-                            logger.debug(f"LLM call completed in {llm_time:.3f}s")
+                            logger.debug("LLM call completed in %.3fs", llm_time)
                     
                     except asyncio.CancelledError:
-                        logger.debug(f"Task {task_name} was cancelled")
+                        logger.debug("Task %s was cancelled", task_name)
                         pass  # Expected when cancelling tasks
                     except Exception as e:
-                        logger.error(f"{task_name} failed: {e}")
+                        logger.error("%s failed: %s", task_name, e)
                         return GuardedResponse(
                             result=ExecutionResult.ERROR,
-                            error_message=f"{task_name} failed: {str(e)}",
+                            error_message="%s failed: %s" % (task_name, str(e)),
                             timing={"total_time": time.time() - start_time}
                         )
             
@@ -772,7 +781,7 @@ class ParallelGuardedChat:
             for task in pending:
                 task.cancel()
             
-            logger.error(f"Parallel guarded call failed: {e}")
+            logger.error("Parallel guarded call failed: %s", e)
             return GuardedResponse(
                 result=ExecutionResult.ERROR,
                 error_message=str(e),
