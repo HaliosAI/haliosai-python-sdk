@@ -93,7 +93,7 @@ class TestGuardedChatCompletionIntegration:
         """Test basic decorator with proper httpx mocking"""
         # Skip this test for now as it requires complex mocking
         # The basic unit tests above provide good coverage
-        pytest.skip("Complex integration test - requires extensive mocking of ParallelGuardedChat")
+        pytest.skip("Complex integration test - requires extensive mocking of HaliosGuard")
 
 
 # Run tests

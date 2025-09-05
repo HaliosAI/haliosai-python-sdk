@@ -2,6 +2,15 @@
 
 This directory contains practical examples demonstrating various HaliosAI SDK features and integration patterns. Each example builds on the previous one, starting with basic usage and progressing to advanced scenarios.
 
+## Learning Path
+
+1. **Start here**: `01_basic_usage.py` - Learn the fundamentals
+2. **Then try**: `02_streaming_guardrails.py` - Add streaming support if you need one
+3. **Next**: `03_tool_calling_simple.py` - Verify tool calling scenarios essential for agentic functionality
+4. **Try**: `04_context_manager_pattern.py` - Powerful DIY approach for complex integrations
+5. **Finally**: `05_openai_agents_guardrails_integration.py` - OpenaAI Agents Framework integration
+
+
 ## Prerequisites
 
 Before running these examples, ensure you have:
@@ -27,13 +36,14 @@ Before running these examples, ensure you have:
 ## Examples Overview
 
 ### 1. Basic Usage (`01_basic_usage.py`)
-**Complexity: Beginner** | **Provider: Gemini**
+**Complexity: Beginner** | **Provider: OpenAI**
 
-Demonstrates the fundamental usage of HaliosAI guardrails with a simple decorator approach. Shows how to protect LLM calls with automatic request and response guardrail evaluation.
+Demonstrates the fundamental usage of HaliosAI guardrails with both parallel and sequential processing modes. Shows how to protect LLM calls with automatic request and response guardrail evaluation.
 
 **Key Features:**
 - Simple `@guarded_chat_completion` decorator usage
-- Concurrent guardrail processing (guardrails run parallel to LLM calls)
+- Parallel processing (guardrails run concurrently with LLM calls)
+- Sequential processing (guardrails run before LLM calls)
 - Detailed violation reporting and timing metrics
 - Error handling for different scenarios
 
@@ -42,7 +52,7 @@ Demonstrates the fundamental usage of HaliosAI guardrails with a simple decorato
 python 01_basic_usage.py
 ```
 
-### 2. Streaming Guardrails (`02_streaming_guardrails.py`)
+### 2. Streaming Guardrails (`02_streaming_response_guardrails.py`)
 **Complexity: Intermediate** | **Provider: OpenAI**
 
 Shows real-time guardrail evaluation during streaming responses. The SDK buffers streaming content and evaluates it incrementally, allowing for early detection of violations.
@@ -74,7 +84,23 @@ Demonstrates guardrail protection for function/tool calling scenarios. Shows how
 python 03_tool_calling_simple.py
 ```
 
-### 4. OpenAI Agents Integration (`04_openai_agents_guardrails_integration.py`)
+### 4. Context Manager Pattern (`04_context_manager_pattern.py`)
+**Complexity: Intermediate** | **Provider: OpenAI**
+
+Demonstrates minimal integration using the async context manager pattern. Shows how to add guardrails with minimal code changes to existing LLM applications.
+
+**Key Features:**
+- Async context manager usage with `async with HaliosGuard()`
+- Minimal code changes required for integration
+- Manual request and response evaluation
+- Resource management and cleanup handled automatically
+
+**Run it:**
+```bash
+python 04_context_manager_pattern.py
+```
+
+### 5. OpenAI Agents Integration (`05_openai_agents_guardrails_integration.py`)
 **Complexity: Advanced** | **Provider: OpenAI Agents**
 
 Demonstrates native integration with the OpenAI Agents framework. Instead of patching clients, this shows how to add HaliosAI guardrails directly to Agent definitions.
@@ -102,19 +128,11 @@ cd examples
 python 01_basic_usage.py
 python 02_streaming_guardrails.py
 python 03_tool_calling_simple.py
-python 04_openai_agents_guardrails_integration.py
+python 04_context_manager_pattern.py
+python 05_openai_agents_guardrails_integration.py
+
 ```
 
-## Demo Mode
-
-If you don't have real API keys, most examples will run in demo mode with mock responses. You'll see mock guardrail evaluations and simulated LLM responses.
-
-## Learning Path
-
-1. **Start here**: `01_basic_usage.py` - Learn the fundamentals
-2. **Then try**: `02_streaming_guardrails.py` - Add streaming support
-3. **Next**: `03_tool_calling_simple.py` - Handle tool calling scenarios
-4. **Finally**: `04_openai_agents_guardrails_integration.py` - Framework integration
 
 ## Troubleshooting
 

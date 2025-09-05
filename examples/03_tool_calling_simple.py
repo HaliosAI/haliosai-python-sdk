@@ -2,8 +2,8 @@
 """
 HaliosAI SDK - Example 3: Simple Tool Calling with Guardrails
 
-This example demonstrates how to use HaliosAI guardrails with Gemini function/tool calling.
-Based on the auto_demo_tools.py structure but using the HaliosAI SDK.
+This example demonstrates how to use HaliosAI guardrails with OpenAI function/tool calling.
+Shows the minimal post-processing required for tool calling workflows.
 
 Requirements:
     pip install haliosai openai
@@ -12,28 +12,27 @@ Environment Variables:
     HALIOS_API_KEY: Your HaliosAI API key  
     HALIOS_BASE_URL: Your HaliosAI base URL (optional)
     HALIOS_AGENT_ID: Your HaliosAI agent ID
-    GEMINI_API_KEY: Your Gemini API key
+    OPENAI_API_KEY: Your OpenAI API key
 """
 
 import asyncio
 import json
 import os
-import time
 from openai import AsyncOpenAI
 
 from haliosai import guarded_chat_completion
 
 # Configuration validation
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 HALIOS_AGENT_ID = os.getenv("HALIOS_AGENT_ID")
 
-if not GEMINI_API_KEY or not HALIOS_AGENT_ID:
+if not OPENAI_API_KEY or not HALIOS_AGENT_ID:
     print("❌ Missing required environment variables:")
-    print("   - GEMINI_API_KEY")
+    print("   - OPENAI_API_KEY")
     print("   - HALIOS_AGENT_ID")
     exit(1)
 
-# Define simple tools (same as auto_demo_tools.py)
+# Define simple tools
 AVAILABLE_TOOLS = [
     {
         "type": "function",
@@ -73,28 +72,11 @@ AVAILABLE_TOOLS = [
                 "required": ["expression"]
             }
         }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_web",
-            "description": "Search the web for information (simulated)",
-            "parameters": {
-                "type": "object", 
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
     }
 ]
 
 def execute_tool_call(tool_call):
-    """Simulate tool execution (from auto_demo_tools.py)"""
+    """Simulate tool execution"""
     function_name = tool_call.function.name
     try:
         arguments = json.loads(tool_call.function.arguments)
@@ -119,218 +101,108 @@ def execute_tool_call(tool_call):
             return {"expression": expression, "result": result}
         except:
             return {"error": "Invalid mathematical expression"}
-    elif function_name == "search_web":
-        query = arguments.get("query", "")
-        return {
-            "query": query,
-            "results": [
-                f"Search result 1 for '{query}'",
-                f"Search result 2 for '{query}'",
-                f"Search result 3 for '{query}'"
-            ]
-        }
     else:
         return {"error": f"Unknown function: {function_name}"}
 
 # Guarded chat completion with tools
-@guarded_chat_completion(
-    agent_id=HALIOS_AGENT_ID
-)
-async def call_gemini_with_tools(messages, tools=None):
-    """
-    Make Gemini API call with tool calling support and automatic guardrails
-    (Based on auto_demo_tools.py structure)
-    """
-    client = AsyncOpenAI(
-        api_key=GEMINI_API_KEY,
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-    )
+@guarded_chat_completion(agent_id=HALIOS_AGENT_ID)
+async def call_openai_with_tools(messages, tools=None):
+    """Make OpenAI API call with tool calling support and automatic guardrails"""
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     
     kwargs = {
-        "model": "gemini-2.0-flash",
+        "model": "gpt-4o-mini",
         "messages": messages,
-        "max_tokens": 300
+        "max_tokens": 1000,
+        "temperature": 0.1
     }
     
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
     
+    # The decorator handles guardrails automatically
     response = await client.chat.completions.create(**kwargs)
     return response
 
-async def chat_with_tools(user_message):
-    """
-    Perform a chat completion with tool calling and guardrails
-    (Simplified version of auto_demo_tools.py)
-    """
-    print(f"\n🤖 Processing: {user_message}")
-    print("="*60)
+async def simple_tool_calling_demo():
+    """Simplified tool calling demo (based on working debug_tools.py pattern)"""
+    print("🔧 HaliosAI Tool Calling Demo - Simplified Version")
+    print("=" * 60)
     
-    messages = [{"role": "user", "content": user_message}]
+    test_messages = [
+        "What's the weather like in San Francisco?",
+        "Calculate 15 * 7 + 3",
+        "Hello, how are you today?"  # No tools needed
+    ]
     
-    try:
-        start_time = time.time()
+    for i, user_message in enumerate(test_messages, 1):
+        print(f"\n{i}️⃣  Testing: {user_message}")
+        print("-" * 40)
         
-        # First call - may include tool calls
-        print("📞 Making initial API call with tools...")
-        response = await call_gemini_with_tools(messages, AVAILABLE_TOOLS)
+        # Start conversation
+        messages = [{"role": "user", "content": user_message}]
         
-        # Handle GuardedResponse from the decorator
-        from haliosai import ExecutionResult
-        
-        if hasattr(response, 'result'):
-            if response.result == ExecutionResult.SUCCESS:
-                # Extract the actual OpenAI response
-                actual_response = response.final_response
-                if isinstance(actual_response, str):
-                    print(f"✅ Response: {actual_response}")
-                    return
-                else:
-                    # Handle dict or OpenAI response object
-                    if hasattr(actual_response, 'choices'):
-                        choice = actual_response.choices[0]
-                    elif isinstance(actual_response, dict) and 'choices' in actual_response:
-                        choice = type('Choice', (), actual_response['choices'][0])()
-                        choice.message = type('Message', (), actual_response['choices'][0]['message'])()
-                        choice.message.content = actual_response['choices'][0]['message'].get('content')
-                        choice.message.tool_calls = actual_response['choices'][0]['message'].get('tool_calls')
-                    else:
-                        print(f"✅ Response: {str(actual_response)}")
-                        return
-            elif response.result == ExecutionResult.REQUEST_BLOCKED:
-                print(f"🚫 Request blocked by guardrails: {response.request_violations}")
-                return
-            elif response.result == ExecutionResult.RESPONSE_BLOCKED:
-                print(f"🚫 Response blocked by guardrails: {response.response_violations}")
-                return
-            else:
-                print(f"❌ Error: {response.error_message}")
-                return
-        else:
-            # Direct response without guardrails
-            choice = response.choices[0]
-        
-        assistant_message = choice.message
-        
-        # Add assistant response to conversation
-        # Fix missing tool call IDs (Gemini compatibility issue)
-        tool_calls_for_message = None
-        if assistant_message.tool_calls:
-            tool_calls_for_message = []
-            for tc in assistant_message.tool_calls:
-                # Generate ID if missing (Gemini compatibility fix)
-                tool_call_id = tc.id if tc.id else f"call_{hash(tc.function.name + tc.function.arguments) & 0x7FFFFFFF:08x}"
-                
-                # Use model_dump instead of deprecated dict()
-                if hasattr(tc, 'model_dump'):
-                    tool_call_dict = tc.model_dump()
-                elif hasattr(tc, 'dict'):
-                    tool_call_dict = tc.dict()
-                else:
-                    # Fallback for basic objects
-                    tool_call_dict = {
-                        "id": tool_call_id,
+        try:
+            # Step 1: Initial call with tools
+            response = await call_openai_with_tools(messages, AVAILABLE_TOOLS)
+            message = response.choices[0].message
+            
+            # Add assistant's response to conversation
+            # Convert tool_calls to serializable format for guardrails
+            tool_calls_dict = None
+            if message.tool_calls:
+                tool_calls_dict = [
+                    {
+                        "id": tc.id,
                         "type": tc.type,
                         "function": {
                             "name": tc.function.name,
                             "arguments": tc.function.arguments
                         }
                     }
-                
-                # Ensure ID is set
-                tool_call_dict["id"] = tool_call_id
-                tool_calls_for_message.append(tool_call_dict)
-        
-        messages.append({
-            "role": "assistant",
-            "content": assistant_message.content,
-            "tool_calls": tool_calls_for_message
-        })
-        
-        # Check if model wants to use tools
-        if assistant_message.tool_calls:
-            print(f"\n🔧 Model requested {len(assistant_message.tool_calls)} tool call(s):")
+                    for tc in message.tool_calls
+                ]
             
-            for i, tool_call in enumerate(assistant_message.tool_calls):
-                print(f"   • {tool_call.function.name}({tool_call.function.arguments})")
-                
-                # Execute the tool call
-                tool_result = execute_tool_call(tool_call)
-                print(f"   → Result: {json.dumps(tool_result, indent=2)}")
-                
-                # Use the same ID we generated for the assistant message
-                tool_call_id = tool_calls_for_message[i]["id"] if tool_calls_for_message else (
-                    tool_call.id if tool_call.id else f"call_{hash(tool_call.function.name + tool_call.function.arguments) & 0x7FFFFFFF:08x}"
-                )
-                
-                # Add tool result to conversation
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": json.dumps(tool_result)
-                })
+            messages.append({
+                "role": "assistant", 
+                "content": message.content,
+                "tool_calls": tool_calls_dict
+            })
             
-            # Make follow-up call with tool results
-            print("\n📞 Making follow-up call with tool results...")
-            final_response = await call_gemini_with_tools(messages)
-            
-            # Handle final response
-            if hasattr(final_response, 'result') and final_response.result == ExecutionResult.SUCCESS:
-                if isinstance(final_response.final_response, str):
-                    final_content = final_response.final_response
-                else:
-                    final_content = final_response.final_response.choices[0].message.content
-            else:
+            # Step 2: Check if tools were called
+            if message.tool_calls:
+                print(f"🔧 OpenAI wants to use {len(message.tool_calls)} tool(s)")
+                
+                # Execute tools and add results
+                for tool_call in message.tool_calls:
+                    print(f"   ▶ Calling: {tool_call.function.name}")
+                    
+                    result = execute_tool_call(tool_call)
+                    print(f"   ◀ Result: {result}")
+                    
+                    # Add tool result to conversation
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result)
+                    })
+                
+                # Step 3: Final call for natural language response
+                print("🔄 Getting final response...")
+                final_response = await call_openai_with_tools(messages)
                 final_content = final_response.choices[0].message.content
+                print(f"✅ Final answer: {final_content}")
                 
-            print(f"\n✅ Final Response:\n{final_content}")
-        else:
-            # No tools needed
-            print(f"\n✅ Response (no tools needed):\n{assistant_message.content}")
-        
-        total_time = time.time() - start_time
-        print(f"\n⏱️  Total conversation time: {total_time:.2f}s")
-        
-    except Exception as e:
-        if "blocked by guardrails" in str(e):
-            print(f"🚫 Blocked by guardrails: {e}")
-        else:
-            print(f"💥 Error: {e}")
-
-async def main():
-    """Run the tool calling demo"""
-    print("🛡️  HaliosAI SDK - Tool Calling Demo")
-    print("="*60)
+            else:
+                # No tools needed
+                print(f"✅ Direct response: {message.content}")
+                
+        except Exception as e:
+            print(f"❌ Error: {e}")
     
-    print("🔧 Available tools:")
-    for tool in AVAILABLE_TOOLS:
-        func = tool["function"]
-        print(f"   • {func['name']}: {func['description']}")
-    
-    # Test cases that should trigger tool usage
-    test_cases = [
-        "What's the weather like in San Francisco?",
-        "Calculate the result of 15 * 8 + 42",
-        "Search for information about quantum computing",
-        "Just say hello to me",  # No tools needed
-    ]
-    
-    for i, test_case in enumerate(test_cases, 1):
-        print(f"\n{'='*60}")
-        print(f"TEST CASE {i}/{len(test_cases)}")
-        await chat_with_tools(test_case)
-        
-        if i < len(test_cases):
-            await asyncio.sleep(1)  # Brief pause between tests
-    
-    print(f"\n{'='*60}")
-    print("✅ Tool calling demo completed!")
-    print("\n📋 This demo tested:")
-    print("   • Request guardrails with tool definitions")
-    print("   • Response guardrails with tool calls")
-    print("   • Multi-turn conversations with tool results")
-    print("   • Both tool-using and non-tool conversations")
+    print("\n" + "=" * 60)
+    print("✨ Tool calling demo completed!")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(simple_tool_calling_demo())

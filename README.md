@@ -112,15 +112,9 @@ result = await runner.run(
 
 Check out the `examples/` directory for complete working examples:
 
-- **`01_basic_usage.py`** - Simple decorator usage with OpenAI
-- **`02_streaming_guardrails.py`** - Real-time streaming with guardrail evaluation  
-- **`03_tool_calling_simple.py`** - Function calling with guardrail protection
-- **`04_openai_agents_guardrails_integration.py`** - Native OpenAI Agents integration
-- **`migration_guide.py`** - Migrating from legacy SDK versions
-
 ## Advanced Usage
 
-### Streaming Support
+### Streaming Response Guardrails Support
 
 ```python
 @guarded_chat_completion(

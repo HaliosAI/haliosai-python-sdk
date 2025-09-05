@@ -13,7 +13,10 @@ class TestToolCalls:
     @pytest.fixture
     def guard(self):
         """Create a HaliosGuard instance for testing"""
-        return HaliosGuard(agent_id="test-agent")
+        guard_instance = HaliosGuard(agent_id="test-agent")
+        # Initialize HTTP client for testing
+        guard_instance._ensure_http_client_for_testing()
+        return guard_instance
 
     @pytest.fixture
     def mock_response_success(self):
@@ -104,12 +107,12 @@ class TestToolCalls:
             }
         ]
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch.object(guard.http_client, 'post') as mock_post:
             mock_response_obj = MagicMock()
             mock_response_obj.json.return_value = mock_response_success
             mock_response_obj.raise_for_status.return_value = None
 
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response_obj
+            mock_post.return_value = mock_response_obj
 
             result = await guard.evaluate(messages, "request")
 
@@ -145,12 +148,12 @@ class TestToolCalls:
             }
         ]
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch.object(guard.http_client, 'post') as mock_post:
             mock_response_obj = MagicMock()
             mock_response_obj.json.return_value = mock_response_success
             mock_response_obj.raise_for_status.return_value = None
 
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response_obj
+            mock_post.return_value = mock_response_obj
 
             result = await guard.evaluate(messages_with_tools, "response")
 
@@ -167,12 +170,12 @@ class TestToolCalls:
             }
         ]
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch.object(guard.http_client, 'post') as mock_post:
             mock_response_obj = MagicMock()
             mock_response_obj.json.return_value = mock_response_violation
             mock_response_obj.raise_for_status.return_value = None
 
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response_obj
+            mock_post.return_value = mock_response_obj
 
             result = await guard.evaluate(messages, "request")
 

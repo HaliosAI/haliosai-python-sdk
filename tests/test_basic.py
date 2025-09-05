@@ -108,28 +108,40 @@ class TestHaliosGuard:
         """Test successful guardrail evaluation"""
         guard_instance = HaliosGuard(agent_id="test-agent", api_key="test-key")
         
+        guard_instance = HaliosGuard(
+            agent_id="test-agent",
+            api_key="test-key",
+            base_url="http://test.com"
+        )
+        
+        # Initialize HTTP client for testing
+        guard_instance._ensure_http_client_for_testing()
+        
         mock_response = {
             "guardrails_triggered": 0,
             "result": [],
             "request": {"message_count": 2, "content_length": 100}
         }
         
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch.object(guard_instance.http_client, 'post') as mock_post:
             mock_response_obj = MagicMock()
             mock_response_obj.json.return_value = mock_response
             mock_response_obj.raise_for_status.return_value = None
-            
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response_obj
-            
+
+            mock_post.return_value = mock_response_obj
+
             result = await guard_instance.evaluate([{"role": "user", "content": "test"}], "request")
             
             assert result == mock_response
-            mock_client.return_value.__aenter__.return_value.post.assert_called_once()
+            mock_post.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_evaluate_with_tool_calls(self):
         """Test evaluation with tool calls in messages"""
         guard_instance = HaliosGuard(agent_id="test-agent", api_key="test-key")
+        
+        # Initialize HTTP client for testing
+        guard_instance._ensure_http_client_for_testing()
         
         messages = [
             {"role": "user", "content": "Calculate 2+2"},
@@ -150,18 +162,18 @@ class TestHaliosGuard:
             "request": {"message_count": 2, "content_length": 150}
         }
         
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch.object(guard_instance.http_client, 'post') as mock_post:
             mock_response_obj = MagicMock()
             mock_response_obj.json.return_value = mock_response
             mock_response_obj.raise_for_status.return_value = None
-            
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response_obj
-            
+
+            mock_post.return_value = mock_response_obj
+
             result = await guard_instance.evaluate(messages, "request")
-            
+
             assert result == mock_response
             # Verify tool calls were included in the payload
-            call_args = mock_client.return_value.__aenter__.return_value.post.call_args
+            call_args = mock_post.call_args
             payload = call_args[1]['json']
             assert payload['messages'] == messages
 
@@ -190,9 +202,12 @@ class TestErrorHandling:
         """Test HTTP error handling"""
         guard_instance = HaliosGuard(agent_id="test-agent", api_key="test-key")
         
-        with patch('httpx.AsyncClient') as mock_client:
-            mock_client.return_value.__aenter__.return_value.post.side_effect = Exception("HTTP 500")
-            
+        # Initialize HTTP client for testing
+        guard_instance._ensure_http_client_for_testing()
+        
+        with patch.object(guard_instance.http_client, 'post') as mock_post:
+            mock_post.side_effect = Exception("HTTP 500")
+
             with pytest.raises(Exception):
                 await guard_instance.evaluate([{"role": "user", "content": "test"}], "request")
     

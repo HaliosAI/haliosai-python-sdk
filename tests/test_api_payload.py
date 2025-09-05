@@ -90,6 +90,9 @@ class TestApiPayload:
     async def test_evaluate_with_tool_calls_mock(self):
         """Test evaluation with tool calls using mocked httpx"""
         guard = HaliosGuard(agent_id="test-agent", api_key="test-key")
+        
+        # Initialize HTTP client for testing
+        guard._ensure_http_client_for_testing()
 
         messages = [
             {"role": "user", "content": "Calculate 2+2"},
@@ -110,18 +113,18 @@ class TestApiPayload:
             "request": {"message_count": 2, "content_length": 150}
         }
 
-        with patch('httpx.AsyncClient') as mock_client:
+        with patch.object(guard.http_client, 'post') as mock_post:
             mock_response_obj = MagicMock()
             mock_response_obj.json.return_value = mock_response
             mock_response_obj.raise_for_status.return_value = None
 
-            mock_client.return_value.__aenter__.return_value.post.return_value = mock_response_obj
+            mock_post.return_value = mock_response_obj
 
             result = await guard.evaluate(messages, "request")
 
             assert result == mock_response
             # Verify the API was called with the correct payload
-            call_args = mock_client.return_value.__aenter__.return_value.post.call_args
+            call_args = mock_post.call_args
             payload = call_args[1]['json']
             assert payload['messages'] == messages
             assert payload['invocation_type'] == "request"
