@@ -3,6 +3,18 @@ HaliosAI SDK - Core Client Module
 
 This module provides the main HaliosGuard class and supporting utilities for
 integrating AI guardrails with LLM applications.
+
+CRITICAL REQUIREMENT: All message parameters must be in OpenAI-compatible format:
+[
+    {"role": "system", "content": "You are a helpful assistant"},
+    {"role": "user", "content": "Hello!"},
+    {"role": "assistant", "content": "Hi there!"}
+]
+
+Each message must have:
+- "role": One of "system", "user", "assistant", or "tool"
+- "content": The message text content
+- Optional fields like "name", "tool_calls", etc. are also supported
 """
 
 import asyncio
@@ -11,6 +23,7 @@ import os
 import time
 import logging
 import inspect
+import warnings
 from typing import List, Dict, Any, Callable, Optional
 from functools import wraps
 from enum import Enum
@@ -20,13 +33,43 @@ from dataclasses import dataclass
 # Configure module logger
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# HTTP CLIENT POOL MANAGEMENT
+# =============================================================================
+# The SDK maintains a pool of HTTP clients to improve performance and reduce
+# connection overhead. Clients are reused across requests to the same base URL.
+#
+# Benefits:
+# - Reduced connection latency for subsequent requests
+# - Better resource utilization
+# - Automatic cleanup on application shutdown
+# - Thread-safe client management
+# =============================================================================
+
 # Module-level HTTP client pool for reuse
 _http_client_pool: Dict[str, httpx.AsyncClient] = {}
 _http_client_pool_lock = asyncio.Lock()
 
 
 async def _get_shared_http_client(base_url: str, timeout: float = 30.0) -> httpx.AsyncClient:
-    """Get or create a shared HTTP client for the given base URL"""
+    """
+    Get or create a shared HTTP client for the given base URL
+
+    This function implements a connection pool pattern to reuse HTTP clients
+    across multiple requests to the same base URL, improving performance
+    by reducing connection overhead.
+
+    Args:
+        base_url: The base URL for which to get/create a client
+        timeout: Request timeout in seconds (default: 30.0)
+
+    Returns:
+        httpx.AsyncClient instance configured for the given base URL
+
+    Note:
+        Clients are automatically cleaned up when the module is unloaded
+        or when _cleanup_http_client_pool() is called explicitly.
+    """
     async with _http_client_pool_lock:
         if base_url not in _http_client_pool:
             _http_client_pool[base_url] = httpx.AsyncClient(
@@ -38,7 +81,16 @@ async def _get_shared_http_client(base_url: str, timeout: float = 30.0) -> httpx
 
 
 async def _cleanup_http_client_pool():
-    """Clean up all shared HTTP clients"""
+    """
+    Clean up all shared HTTP clients
+
+    This function should be called during application shutdown to properly
+    close all HTTP connections and free resources. It's automatically called
+    when the module is unloaded, but can be called manually for explicit cleanup.
+
+    Note:
+        After cleanup, new requests will create fresh HTTP clients as needed.
+    """
     async with _http_client_pool_lock:
         for client in _http_client_pool.values():
             await client.aclose()
@@ -77,14 +129,45 @@ class GuardedResponse:
 
 class HaliosGuard:
     """
-    Unified HaliosAI guardrails client
+    Unified HaliosAI guardrails client for LLM applications
 
-    Provides comprehensive AI guardrails for LLM applications with support for:
+    IMPORTANT: All message parameters must be in OpenAI-compatible format:
+    [
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "Hello!"},
+        {"role": "assistant", "content": "Hi there!"}
+    ]
+
+    This class provides comprehensive AI guardrails with multiple integration patterns:
+
+    Integration Patterns:
+    1. Decorator Pattern (Recommended):
+       @guarded_chat_completion(agent_id="your-agent")
+       async def call_llm(messages): ...
+
+    2. Context Manager Pattern:
+       async with HaliosGuard(agent_id="your-agent") as guard:
+           # Manual evaluation
+           guard.evaluate(messages, "request")
+
+    3. Direct Method Calls:
+       guard = HaliosGuard(agent_id="your-agent")
+       result = await guard.evaluate_request(messages)
+
+    Features:
     - Sequential and parallel processing modes
     - Streaming with real-time guardrail evaluation
     - Context manager pattern for resource management
-    - Direct evaluation methods
-    - Function patching utilities
+    - Direct evaluation methods for custom integrations
+    - Function patching utilities (deprecated)
+
+    Processing Modes:
+    - Parallel: Guardrails run concurrently with LLM calls (faster)
+    - Sequential: Guardrails complete before LLM calls (safer)
+
+    Note:
+        For new integrations, prefer the @guarded_chat_completion decorator
+        over direct HaliosGuard instantiation for better maintainability.
     """
 
     def __init__(self, agent_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None,
@@ -92,17 +175,42 @@ class HaliosGuard:
                  stream_buffer_size: int = 50, stream_check_interval: float = 0.5,
                  guardrail_timeout: float = 5.0, http_client: Optional[httpx.AsyncClient] = None):
         """
-        Initialize unified HaliosGuard
+        Initialize unified HaliosGuard with comprehensive configuration options
+
+        This constructor sets up the guardrail client with all necessary configuration
+        for both parallel and sequential processing modes, streaming support, and
+        performance tuning options.
 
         Args:
-            agent_id: Agent ID for guardrail configuration
-            api_key: API key (defaults to HALIOS_API_KEY env var)
-            base_url: Base URL for guardrails API (defaults to HALIOS_BASE_URL env var)
-            parallel: Enable parallel execution of guardrails and LLM calls (default: True)
-            streaming: Enable streaming mode with real-time guardrail evaluation
-            stream_buffer_size: Characters to buffer before guardrail check
-            stream_check_interval: Time interval for guardrail checks in seconds
-            guardrail_timeout: Timeout for guardrail operations in seconds
+            agent_id: Unique identifier for your HaliosAI agent configuration
+            api_key: HaliosAI API key (defaults to HALIOS_API_KEY environment variable)
+            base_url: HaliosAI API base URL (defaults to HALIOS_BASE_URL or localhost:2000)
+            parallel: Enable parallel processing (guardrails run concurrently with LLM calls)
+                     - True: Faster execution, guardrails don't block LLM calls
+                     - False: Safer execution, guardrails complete before LLM calls
+            streaming: Enable real-time streaming guardrail evaluation
+            stream_buffer_size: Character buffer size before guardrail evaluation during streaming
+            stream_check_interval: Time interval between guardrail checks during streaming
+            guardrail_timeout: Maximum time to wait for guardrail evaluation (seconds)
+            http_client: Optional pre-configured HTTP client (uses shared pool by default)
+
+        Configuration Examples:
+            # Basic setup with environment variables
+            guard = HaliosGuard(agent_id="your-agent")
+
+            # Parallel processing (recommended for performance)
+            guard = HaliosGuard(agent_id="your-agent", parallel=True)
+
+            # Streaming with custom buffer size
+            guard = HaliosGuard(
+                agent_id="your-agent",
+                streaming=True,
+                stream_buffer_size=100
+            )
+
+        Note:
+            HTTP clients are managed automatically via a shared connection pool
+            for optimal performance and resource utilization.
         """
         self.agent_id = agent_id
         self.api_key = api_key or os.getenv("HALIOS_API_KEY")
@@ -113,8 +221,8 @@ class HaliosGuard:
         self.stream_check_interval = stream_check_interval
         self.guardrail_timeout = guardrail_timeout
 
-        # Use shared HTTP client from pool
-        self.http_client = None  # Will be initialized lazily
+        # HTTP client management - uses shared pool for connection reuse
+        self.http_client = http_client  # Will be initialized lazily from shared pool
         self._http_client_base_url = base_url or os.getenv("HALIOS_BASE_URL", "http://localhost:2000")
 
     async def _get_http_client(self) -> httpx.AsyncClient:
@@ -127,12 +235,47 @@ class HaliosGuard:
         """
         Evaluate messages against configured guardrails
 
+        CRITICAL: Messages must be in OpenAI-compatible format:
+        [
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": "Hello!"},
+            {"role": "assistant", "content": "Hi there!"}
+        ]
+
+        This is the core guardrail evaluation method that sends conversation messages
+        to the HaliosAI API for analysis. It supports both pre-call ("request") and
+        post-call ("response") evaluation modes.
+
         Args:
-            messages: List of chat messages to evaluate
-            invocation_type: Type of evaluation ("request" or "response")
+            messages: List of conversation messages in OpenAI format
+                     [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}]
+            invocation_type: Type of evaluation
+                           - "request": Pre-call evaluation (before LLM response)
+                           - "response": Post-call evaluation (after LLM response)
 
         Returns:
-            Dict containing guardrail evaluation results
+            Dict containing detailed evaluation results:
+            {
+                "guardrails_triggered": int,  # Number of guardrails that triggered
+                "results": [...],             # Detailed results from each guardrail
+                "execution_time": float,     # Time taken for evaluation
+                "error": str|None           # Any error that occurred
+            }
+
+        Usage Examples:
+            # Pre-call evaluation (recommended for safety)
+            result = await guard.evaluate([{"role": "user", "content": "Hello"}], "request")
+
+            # Post-call evaluation (for response validation)
+            result = await guard.evaluate(
+                [{"role": "user", "content": "Hello"}, {"role": "assistant", "content": "Hi"}],
+                "response"
+            )
+
+        Note:
+            This method automatically handles authentication, HTTP client management,
+            and error handling. It will raise exceptions for network errors or API
+            failures, so wrap calls in try/except blocks for production use.
         """
         logger.debug(f"Evaluating {len(messages)} messages with type={invocation_type}")
 
@@ -581,14 +724,37 @@ class HaliosGuard:
 
     def patch_function(self, original_func: Callable) -> Callable:
         """
-        Create a guarded version of any async function
+        DEPRECATED: Create a guarded version of any async function
+
+        This method is deprecated and will be removed in a future version.
+        Use the @guarded_chat_completion decorator instead for new integrations.
+
+        Migration Guide:
+        OLD: guard.patch_function(your_llm_function)
+        NEW: @guarded_chat_completion(agent_id="your-agent")
+             async def your_llm_function(messages): ...
+
+        Benefits of Migration:
+        - Better performance with optimized guardrail evaluation
+        - Cleaner code without monkey-patching
+        - Easier testing and debugging
+        - Future-proof API compatibility
 
         Args:
             original_func: Original async function to wrap with guardrails
 
         Returns:
             Wrapped function with guardrail protection
+
+        Warning:
+            This method may be removed in version 2.0. Migrate to decorators
+            for better maintainability and performance.
         """
+        warnings.warn(
+            "patch_function is deprecated. Use @guarded_chat_completion decorator instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         @wraps(original_func)
         async def guarded_func(*args, **kwargs):
             # Extract messages for guardrail evaluation
@@ -925,7 +1091,7 @@ class ParallelGuardedChat:
     Maintained for backward compatibility.
     """
 
-    def __init__(self, agent_id: str, api_key: str = None, base_url: str = None,
+    def __init__(self, agent_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None,
                  guardrail_timeout: float = 5.0, streaming: bool = False,
                  stream_buffer_size: int = 50, stream_check_interval: float = 0.5):
         """
@@ -1624,19 +1790,41 @@ def guarded_chat_completion(
     return decorator
 
 
-# Legacy compatibility functions - these will be deprecated
+# =============================================================================
+# LEGACY COMPATIBILITY FUNCTIONS - DEPRECATED
+# =============================================================================
+# These functions provide backward compatibility but are deprecated.
+# They exist to ease migration from older SDK versions.
+#
+# Migration Timeline:
+# - Current: Functions work but emit deprecation warnings
+# - Future: Functions will be removed in a major version update
+#
+# Recommended Migration:
+#   OLD: guard(agent_id="your-agent")
+#   NEW: @guarded_chat_completion(agent_id="your-agent")
+# =============================================================================
+
 def guard(agent_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None, parallel: bool = False):
     """
-    Create a HaliosGuard instance (Legacy - use guarded_chat_completion decorator instead)
-    
+    DEPRECATED: Create a HaliosGuard instance
+
+    This function creates a HaliosGuard instance for manual guardrail evaluation.
+    It is deprecated in favor of the @guarded_chat_completion decorator which
+    provides a more convenient and maintainable API.
+
     Args:
         agent_id: Agent ID for guardrail configuration
         api_key: API key (defaults to HALIOS_API_KEY env var)
         base_url: Base URL for guardrails API (defaults to HALIOS_BASE_URL env var)
         parallel: Enable parallel execution of guardrails and LLM calls
-        
+
     Returns:
         HaliosGuard instance that can be used as decorator or patcher
+
+    Migration:
+        Instead of: guard_instance = guard("your-agent")
+        Use: @guarded_chat_completion(agent_id="your-agent")
     """
     logger.warning("guard() is deprecated. Use guarded_chat_completion() decorator instead.")
     return HaliosGuard(agent_id, api_key, base_url, parallel)
@@ -1644,13 +1832,30 @@ def guard(agent_id: str, api_key: Optional[str] = None, base_url: Optional[str] 
 
 def parallel_guarded_chat(**config):
     """
-    Decorator factory for parallel guarded chat (Legacy - use guarded_chat_completion instead)
+    DEPRECATED: Decorator factory for parallel guarded chat
+
+    This function creates a decorator for parallel guardrail processing.
+    It is deprecated in favor of the unified @guarded_chat_completion decorator.
+
+    Args:
+        **config: Configuration parameters including:
+            - app_id: Agent ID (required)
+            - api_key: API key (optional)
+            - base_url: Base URL (optional)
+            - streaming: Enable streaming support (optional)
+
+    Returns:
+        Decorator function that wraps async functions with parallel guardrail processing
+
+    Migration:
+        Instead of: @parallel_guarded_chat(app_id="your-agent")
+        Use: @guarded_chat_completion(agent_id="your-agent", concurrent_guardrail_processing=True)
     """
     logger.warning("parallel_guarded_chat() is deprecated. Use guarded_chat_completion(concurrent_guardrail_processing=True) instead.")
     # Map to new decorator
     streaming = config.pop('streaming', False)
     app_id = config.pop('app_id')
-    
+
     return guarded_chat_completion(
         agent_id=app_id,
         concurrent_guardrail_processing=True,
@@ -1679,14 +1884,41 @@ def streaming_guarded_chat(app_id: str, api_key: Optional[str] = None, base_url:
     )
 
 
-# Utility functions for client patching
+# =============================================================================
+# LEGACY PATCHING FUNCTIONS - DEPRECATED
+# =============================================================================
+# These functions are deprecated in favor of the unified decorator approach.
+# They perform monkey-patching of LLM client libraries, which is less maintainable
+# and can cause issues with library updates.
+#
+# Migration Guide:
+#   OLD: patch_all(agent_id="your-agent")
+#   NEW: @guarded_chat_completion(agent_id="your-agent")
+#
+# Benefits of new approach:
+# - No monkey-patching required
+# - Better type safety and IDE support
+# - Cleaner error handling
+# - More predictable behavior
+# =============================================================================
+
 def patch_openai(guard_instance: HaliosGuard):
     """
-    Patch OpenAI client with HaliosAI guardrails
-    
+    DEPRECATED: Patch OpenAI client with HaliosAI guardrails
+
+    This function monkey-patches the OpenAI library to automatically apply
+    guardrails to all chat completion calls. This approach is deprecated
+    in favor of the @guarded_chat_completion decorator.
+
     Args:
         guard_instance: HaliosGuard instance to use for patching
+
+    Warning:
+        This function modifies global state and may cause issues with
+        OpenAI library updates or other code that depends on the original
+        OpenAI client behavior.
     """
+    logger.warning("patch_openai() is deprecated. Use @guarded_chat_completion decorator instead.")
     try:
         import openai
         guard_instance.patch(openai.OpenAI.chat.completions, 'create')
@@ -1698,11 +1930,21 @@ def patch_openai(guard_instance: HaliosGuard):
 
 def patch_anthropic(guard_instance: HaliosGuard):
     """
-    Patch Anthropic client with HaliosAI guardrails
-    
+    DEPRECATED: Patch Anthropic client with HaliosAI guardrails
+
+    This function monkey-patches the Anthropic library to automatically apply
+    guardrails to all message calls. This approach is deprecated in favor of
+    the @guarded_chat_completion decorator.
+
     Args:
         guard_instance: HaliosGuard instance to use for patching
+
+    Warning:
+        This function modifies global state and may cause issues with
+        Anthropic library updates or other code that depends on the original
+        Anthropic client behavior.
     """
+    logger.warning("patch_anthropic() is deprecated. Use @guarded_chat_completion decorator instead.")
     try:
         import anthropic
         guard_instance.patch(anthropic.Anthropic.messages, 'create')
@@ -1714,18 +1956,29 @@ def patch_anthropic(guard_instance: HaliosGuard):
 
 def patch_all(app_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None):
     """
-    Auto-patch all detected LLM clients and frameworks
-    
+    DEPRECATED: Auto-patch all detected LLM clients and frameworks
+
+    This function automatically detects and patches all available LLM client
+    libraries (OpenAI, Anthropic, etc.) with HaliosAI guardrails. This approach
+    is deprecated in favor of explicit decorator usage.
+
     Args:
         app_id: Agent ID for guardrail configuration
         api_key: API key (defaults to HALIOS_API_KEY env var)
         base_url: Base URL for guardrails API (defaults to HALIOS_BASE_URL env var)
-        
+
     Returns:
-        Dict containing the guard instance and any framework patchers
+        HaliosGuard instance (for advanced usage)
+
+    Warning:
+        This function performs global monkey-patching and may interfere with
+        other code that depends on unmodified LLM client behavior. Use the
+        @guarded_chat_completion decorator instead for better control and
+        maintainability.
     """
+    logger.warning("patch_all() is deprecated. Use @guarded_chat_completion decorator instead.")
     halios_guard = guard(app_id, api_key, base_url)
     patch_openai(halios_guard)
     patch_anthropic(halios_guard)
-    
+
     return halios_guard
