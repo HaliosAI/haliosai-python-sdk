@@ -1,8 +1,8 @@
 # HaliosAI SDK
 
-[![PyPI version](https://badge.fury.io/py/haliosai.svg)](https://badge.fury.io/py/haliosai)
+[![PyPI version](https://img.shields.io/pypi/v/haliosai.svg)](https://pypi.org/project/haliosai/)
 [![Python Support](https://img.shields.io/pypi/pyversions/haliosai.svg)](https://pypi.org/project/haliosai/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 **HaliosAI : Ship Reliable AI Agents Faster!** 🚀🚀🚀
 
@@ -27,15 +27,14 @@ pip install haliosai
 For specific LLM providers:
 ```bash
 pip install haliosai[openai]        # For OpenAI support
-pip install haliosai[anthropic]     # For Anthropic support  
 pip install haliosai[agents]        # For OpenAI Agents support
 pip install haliosai[all]           # For all providers
 ```
 
 ## Prerequisites
 
-1. **Get your API key**: Visit [app.halioslabs.com](https://app.halioslabs.com) to obtain your HaliosAI API key
-2. **Create an agent**: Follow the documentation to create your first agent and configure guardrails
+1. **Get your API key**: Visit [console.halios.ai](https://console.halios.ai) to obtain your HaliosAI API key
+2. **Create an agent**: Follow the [documentation](https://docs.halios.ai) to create your first agent and configure guardrails
 3. **Keep your agent_id handy**: You'll need it for SDK integration
 
 ## Quick Start
@@ -195,6 +194,11 @@ else:
             raise
 ```
 
+## Note
+Currently, HaliosAI SDK supports OpenAI and OpenAI Agents frameworks natively. Other providers (e.g. Anthropic and Gemini) can be integrated using their OpenAI-compatible APIs via OpenAI SDK. Support for additional frameworks is coming soon.
+
+This is beta release. API and features may change. Please report any issues or feedback on GitHub.
+
 ## Requirements
 
 - Python 3.8+
@@ -209,14 +213,12 @@ else:
 
 ## Documentation
 
-- 📖 **Full Documentation**: [docs.halioslabs.com](https://docs.halioslabs.com)
-- 🚀 **Getting Started Guide**: Create agents and configure guardrails
-- 📋 **API Reference**: Complete SDK documentation
-- 💡 **Best Practices**: Performance optimization and deployment tips
+- 📖 **Full Documentation**: [docs.halios.ai](https://docs.halios.ai)
 
 ## Support
 
-- 📧 **Email**: support@halioslabs.com
+- 🌐 **Website**: [halios.ai](https://halios.ai)
+- 📧 **Email**: support@halios.ai
 - � **Issues**: [GitHub Issues](https://github.com/HaliosAI/haliosai-python-sdk/issues)
 - 💬 **Discussions**: [GitHub Discussions](https://github.com/HaliosAI/haliosai-python-sdk/discussions)
 
@@ -226,4 +228,4 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.

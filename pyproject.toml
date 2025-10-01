@@ -4,22 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "haliosai"
-version = "1.0.0"
-description = "Advanced AI Guardrails SDK for LLM applications"
+version = "1.0.3"
+description = "Advanced Guardrails and Evaluation SDK for AI Agents"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 authors = [
-    {name = "HaliosLabs", email = "support@halioslabs.com"}
+    {name = "HaliosLabs", email = "support@halios.ai"}
 ]
 maintainers = [
-    {name = "HaliosLabs", email = "support@halioslabs.com"}
+    {name = "HaliosLabs", email = "support@halios.ai"}
 ]
 keywords = [
     "ai", "guardrails", "llm", "safety", "content-moderation", 
-    "openai", "anthropic", "agents", "streaming", "parallel"
+    "openai", "anthropic", "agents", "streaming", "parallel", "reliability",
+    "ai security", "llm security", "llm guardrails", "ai guardrails","ai agent evaluation",
+    "eval","prompt injection","jailbreak", "sensitive data detection","pii detection","mcp security"
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -40,7 +42,6 @@ dependencies = [
 
 [project.optional-dependencies]
 openai = ["openai>=1.0.0"]
-anthropic = ["anthropic>=0.25.0"]
 agents = ["openai-agents>=0.1.0"]
 dev = [
     "pytest>=7.0.0",
@@ -53,12 +54,12 @@ dev = [
     "build>=0.10.0",
 ]
 all = [
-    "haliosai[openai,anthropic,agents]"
+    "haliosai[openai,agents]"
 ]
 
 [project.urls]
 Homepage = "https://github.com/HaliosAI/haliosai-python-sdk"
-Documentation = "https://docs.halioslabs.com"
+Documentation = "https://docs.halios.ai"
 Repository = "https://github.com/HaliosAI/haliosai-python-sdk"
 Changelog = "https://github.com/HaliosAI/haliosai-python-sdk/releases"
 "Bug Reports" = "https://github.com/HaliosAI/haliosai-python-sdk/issues"
