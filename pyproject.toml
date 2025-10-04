@@ -53,6 +53,9 @@ dev = [
     "twine>=4.0.0",
     "build>=0.10.0",
 ]
+test = [
+    "haliosai[dev,openai,agents]"
+]
 all = [
     "haliosai[openai,agents]"
 ]
