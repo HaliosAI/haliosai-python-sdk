@@ -164,7 +164,7 @@ result = await runner.run(
 
 ## Examples
 
-Check out the `examples/` directory for complete working examples:
+Check out the `examples/` directory for complete working examples.
 
 ### 🚀 Recommended Starting Point
 
@@ -204,103 +204,7 @@ Check out the `examples/` directory for complete working examples:
 - Integration with OpenAI Agents SDK
 - Multi-agent workflows
 
-### Running Examples
 
-⚠️  **Important:** Update test messages in each example to match YOUR agent's persona!
-
-```bash
-# Interactive (recommended!)
-python examples/06_interactive_chatbot.py
-
-# Basic usage
-python examples/01_basic_usage.py
-
-# Streaming
-python examples/02_streaming_response_guardrails.py
-```
-
-## Advanced Usage
-
-### Streaming Response Guardrails Support
-
-```python
-@guarded_chat_completion(
-    agent_id="your-agent-id",
-    streaming_guardrails=True,
-    stream_buffer_size=100
-)
-async def stream_llm_call(messages):
-    async for chunk in openai_client.chat.completions.create(
-        model="gpt-4",
-        messages=messages,
-        stream=True
-    ):
-        yield chunk
-
-# Handle streaming events
-async for event in stream_llm_call(messages):
-    if event['type'] == 'chunk':
-        print(event['content'], end='')
-    elif event['type'] == 'violation':
-        print(f"Content blocked: {event['violations']}")
-        break
-```
-
-### Performance Optimization
-
-```python
-# Sequential processing (for debugging)
-@guarded_chat_completion(
-    agent_id="your-agent-id", 
-    concurrent_guardrail_processing=False
-)
-async def debug_llm_call(messages):
-    return await openai_client.chat.completions.create(...)
-
-# Custom timeout settings
-@guarded_chat_completion(
-    agent_id="your-agent-id",
-    guardrail_timeout=10.0  # Increase timeout for slow networks
-)
-async def slow_network_call(messages):
-    return await openai_client.chat.completions.create(...)
-```
-
-### Error Handling
-
-```python
-from haliosai import guarded_chat_completion, ExecutionResult
-
-@guarded_chat_completion(agent_id="your-agent-id")
-async def protected_agent_call(messages):
-    return await agent_call(messages)
-
-# Better approach: Check execution result instead of catching exceptions
-result = await protected_agent_call(messages)
-
-if hasattr(result, '_halios_execution_result'):
-    execution_result = result._halios_execution_result
-    
-    if execution_result.result == ExecutionResult.REQUEST_BLOCKED:
-        print(f"Request blocked: {execution_result.request_violations}")
-        # Handle blocked request appropriately
-    elif execution_result.result == ExecutionResult.RESPONSE_BLOCKED:
-        print(f"Response blocked: {execution_result.response_violations}")
-        # Handle blocked response appropriately
-    elif execution_result.result == ExecutionResult.SUCCESS:
-        print("Agent call completed successfully")
-        # Use the response normally
-else:
-    # Fallback: handle the legacy ValueError approach
-    try:
-        response = await protected_agent_call(messages)
-    except ValueError as e:
-        if "blocked by guardrails" in str(e):
-            print(f"Content blocked: {e}")
-            # Handle blocked content appropriately
-        else:
-            raise
-```
 
 ## Note
 Currently, HaliosAI SDK supports OpenAI and OpenAI Agents frameworks natively. Other providers (e.g. Anthropic and Gemini) can be integrated using their OpenAI-compatible APIs via OpenAI SDK. Support for additional frameworks is coming soon.
