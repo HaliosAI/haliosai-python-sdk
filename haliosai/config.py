@@ -51,7 +51,7 @@ def get_api_key() -> Optional[str]:
 
 def get_base_url() -> str:
     """Get base URL from environment variable with default fallback"""
-    return os.getenv("HALIOS_BASE_URL", "http://localhost:2000")
+    return os.getenv("HALIOS_BASE_URL", "https://api.halios.ai")
 
 
 # Auto-setup logging on import

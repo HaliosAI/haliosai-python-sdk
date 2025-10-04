@@ -107,6 +107,52 @@ class ExecutionResult(Enum):
     ERROR = "error"
 
 
+class ViolationAction(Enum):
+    """Enum representing different actions to take when violations are detected"""
+    PASS = "pass"                      # No violations detected, request is clean
+    BLOCK = "block"                    # Violations detected, request is blocked
+    ALLOW_OVERRIDE = "allow_override"  # Violations detected but allowed (by policy, sanitization, or default permissive behavior)
+
+
+class GuardrailPolicy(Enum):
+    """Enum representing guardrail policy actions for specific guardrail types"""
+    RECORD_ONLY = "record_only"        # Log violations but allow request to proceed
+    BLOCK = "block"                    # Block request when violations are detected
+
+
+@dataclass
+class ViolationResult:
+    """Result of guardrail violation check with detailed information"""
+    action: ViolationAction
+    violations: Optional[List[Dict]] = None
+    has_violations: bool = False
+    blocking_violations: bool = False
+    
+    def __post_init__(self):
+        if self.violations is None:
+            self.violations = []
+        self.has_violations = len(self.violations) > 0
+        self.blocking_violations = self.action == ViolationAction.BLOCK
+
+
+class GuardrailViolation(Exception):
+    """Raised when guardrails block content"""
+    
+    def __init__(self, 
+                 violation_type: str,  # "request" or "response"
+                 violations: List[Dict],
+                 blocked_content: Optional[str] = None,
+                 timing: Optional[Dict] = None):
+        self.violation_type = violation_type  # "request" or "response"
+        self.violations = violations
+        self.blocked_content = blocked_content
+        self.timing = timing or {}
+        
+        # Create user-friendly message
+        guardrail_types = [v.get('guardrail_type', v.get('type', 'unknown')) for v in violations]
+        super().__init__(f"Content blocked by {', '.join(guardrail_types)}")
+
+
 @dataclass
 class GuardedResponse:
     """Response object containing execution results and metadata"""
@@ -172,8 +218,9 @@ class HaliosGuard:
 
     def __init__(self, agent_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None,
                  parallel: bool = False, streaming: bool = False,
-                 stream_buffer_size: int = 50, stream_check_interval: float = 0.5,
-                 guardrail_timeout: float = 5.0, http_client: Optional[httpx.AsyncClient] = None):
+                 stream_buffer_size: Optional[int] = None, stream_check_interval: Optional[float] = None,
+                 guardrail_timeout: float = 5.0, http_client: Optional[httpx.AsyncClient] = None,
+                 guardrail_policies: Optional[Dict[str, GuardrailPolicy]] = None):
         """
         Initialize unified HaliosGuard with comprehensive configuration options
 
@@ -184,15 +231,25 @@ class HaliosGuard:
         Args:
             agent_id: Unique identifier for your HaliosAI agent configuration
             api_key: HaliosAI API key (defaults to HALIOS_API_KEY environment variable)
-            base_url: HaliosAI API base URL (defaults to HALIOS_BASE_URL or localhost:2000)
+            base_url: HaliosAI API base URL (defaults to HALIOS_BASE_URL or https://api.halios.ai)
             parallel: Enable parallel processing (guardrails run concurrently with LLM calls)
                      - True: Faster execution, guardrails don't block LLM calls
                      - False: Safer execution, guardrails complete before LLM calls
             streaming: Enable real-time streaming guardrail evaluation
-            stream_buffer_size: Character buffer size before guardrail evaluation during streaming
-            stream_check_interval: Time interval between guardrail checks during streaming
+            stream_buffer_size: Optional character buffer size threshold for guardrail evaluation
+                              If specified alone, only character-based checking is used
+                              If not specified and stream_check_interval is specified, disabled
+                              If neither specified, defaults to 50 characters
+            stream_check_interval: Optional time interval (seconds) for guardrail checks
+                                  If specified alone, only time-based checking is used
+                                  If not specified and stream_buffer_size is specified, disabled
+                                  If neither specified, defaults to 0.5 seconds
+                                  Note: When both specified, evaluation triggers when EITHER condition is met
             guardrail_timeout: Maximum time to wait for guardrail evaluation (seconds)
             http_client: Optional pre-configured HTTP client (uses shared pool by default)
+            guardrail_policies: Optional dict mapping guardrail types to actions
+                              Actions: GuardrailPolicy.RECORD_ONLY, GuardrailPolicy.BLOCK
+                              Example: {"sensitive-data": GuardrailPolicy.BLOCK, "hate-speech": GuardrailPolicy.RECORD_ONLY}
 
         Configuration Examples:
             # Basic setup with environment variables
@@ -214,16 +271,43 @@ class HaliosGuard:
         """
         self.agent_id = agent_id
         self.api_key = api_key or os.getenv("HALIOS_API_KEY")
-        self.base_url = base_url or os.getenv("HALIOS_BASE_URL", "http://localhost:2000")
+        self.base_url = base_url or os.getenv("HALIOS_BASE_URL", "https://api.halios.ai")
         self.parallel = parallel
         self.streaming = streaming
-        self.stream_buffer_size = stream_buffer_size
-        self.stream_check_interval = stream_check_interval
+        
+        # Handle either/or configuration for streaming buffer
+        # If neither specified, use defaults for both
+        # If only one specified, disable the other
+        if stream_buffer_size is None and stream_check_interval is None:
+            # Neither specified - use defaults for both
+            self.stream_buffer_size = 50
+            self.stream_check_interval = 0.5
+        elif stream_buffer_size is not None and stream_check_interval is None:
+            # Only buffer size specified - disable time-based checking
+            self.stream_buffer_size = stream_buffer_size
+            self.stream_check_interval = None
+        elif stream_buffer_size is None and stream_check_interval is not None:
+            # Only time interval specified - disable character-based checking
+            self.stream_buffer_size = None
+            self.stream_check_interval = stream_check_interval
+        else:
+            # Both specified - use both (hybrid approach)
+            self.stream_buffer_size = stream_buffer_size
+            self.stream_check_interval = stream_check_interval
+        
         self.guardrail_timeout = guardrail_timeout
+        # Validate guardrail policies
+        if guardrail_policies:
+            for guardrail_type, policy in guardrail_policies.items():
+                if not isinstance(policy, GuardrailPolicy):
+                    raise ValueError(f"Invalid guardrail policy for '{guardrail_type}': {policy}. "
+                                   f"Must be a GuardrailPolicy enum value (RECORD_ONLY or BLOCK)")
+
+        self.guardrail_policies = guardrail_policies or {}  # Default empty dict
 
         # HTTP client management - uses shared pool for connection reuse
         self.http_client = http_client  # Will be initialized lazily from shared pool
-        self._http_client_base_url = base_url or os.getenv("HALIOS_BASE_URL", "http://localhost:2000")
+        self._http_client_base_url = base_url or os.getenv("HALIOS_BASE_URL", "https://api.halios.ai")
 
     async def _get_http_client(self) -> httpx.AsyncClient:
         """Lazily get or create shared HTTP client"""
@@ -429,71 +513,37 @@ class HaliosGuard:
         Extract content from LLM response
 
         Handles various response formats from different LLM providers.
+        Uses extract_response_message internally for consistent tool call handling.
         """
-        # Handle OpenAI-style response
-        if hasattr(response, 'choices') and response.choices:
-            if hasattr(response.choices[0], 'message'):
-                message = response.choices[0].message
-                content = message.content or ""
-
-                # If there are tool calls but no content, create a description
-                if hasattr(message, 'tool_calls') and message.tool_calls and not content:
-                    tool_names = [tc.function.name for tc in message.tool_calls]
-                    content = f"Assistant called tools: {', '.join(tool_names)}"
-
-                logger.debug(f"Extracted content from OpenAI message: {len(content)} chars")
-                return content
-            if hasattr(response.choices[0], 'text'):
-                content = response.choices[0].text
-                logger.debug(f"Extracted content from OpenAI text: {len(content)} chars")
-                return content
-
-        # Handle dict response
-        if isinstance(response, dict):
-            if 'choices' in response:
-                message = response['choices'][0].get('message', {})
-                content = message.get('content', '')
-                if content is None:
-                    # Check for tool calls when content is None
-                    tool_calls = message.get('tool_calls', [])
-                    if tool_calls:
-                        tool_names = [call.get('function', {}).get('name', 'unknown') for call in tool_calls]
-                        content = f"Assistant called tools: {', '.join(tool_names)}"
-                    else:
-                        content = ''
-                logger.debug("Extracted content from dict response: %s chars", len(content))
-                return content
-            if 'output' in response:
-                content = response['output']
-                logger.debug("Extracted content from output field: %s chars", len(content))
-                return content
-            if 'text' in response:
-                content = response['text']
-                logger.debug("Extracted content from text field: %s chars", len(content))
-                return content
-
-        # Handle string response
-        if isinstance(response, str):
-            logger.debug("Using string response directly: %s chars", len(response))
-            return response
-
-        # Fallback to string conversion
-        content = str(response)
-        logger.debug("Converted response to string: %s chars", len(content))
+        message_dict = self.extract_response_message(response)
+        content = message_dict.get('content', '')
+        
+        # If there are tool calls but no content, create a description
+        tool_calls = message_dict.get('tool_calls', [])
+        if tool_calls and not content:
+            tool_names = [tc.get('function', {}).get('name', 'unknown') for tc in tool_calls]
+            content = f"Assistant called tools: {', '.join(tool_names)}"
+        
+        logger.debug(f"Extracted content from response message: {len(content)} chars")
         return content
 
-    async def check_violations(self, guardrail_result: Dict) -> bool:
+    async def check_violations(self, guardrail_result: Dict) -> ViolationResult:
         """
-        Check if any guardrails were triggered and should halt execution
+        Check guardrail violations and determine appropriate action
 
         Args:
             guardrail_result: Result from guardrail evaluation
 
         Returns:
-            True if violations found and execution should be halted
+            ViolationResult with action and violation details
         """
         if not guardrail_result:
-            return False
+            return ViolationResult(action=ViolationAction.PASS)
+
+        # Check for modified_messages - allow if present (content was sanitized)
+        if 'modified_messages' in guardrail_result:
+            logger.debug("Modified messages present - allowing request to pass with sanitized content")
+            return ViolationResult(action=ViolationAction.ALLOW_OVERRIDE)
 
         # Check if any guardrails were triggered
         guardrails_triggered = guardrail_result.get('guardrails_triggered', 0)
@@ -510,24 +560,138 @@ class HaliosGuard:
                     })
 
             if violations:
-                # Format violation details for logging
-                violation_details = []
-                for v in violations:
-                    analysis = v.get('analysis') or {}
-                    detail = f"{v['type']}"
-                    if 'explanation' in analysis and analysis['explanation']:
-                        detail += f": {analysis['explanation']}"
-                    elif 'detected_topics' in analysis and analysis['detected_topics']:
-                        detail += f": detected {', '.join(analysis['detected_topics'])}"
-                    elif analysis.get('flagged'):
-                        detail += ": content flagged as potentially harmful"
-                    violation_details.append(detail)
+                # Check guardrail policies for each violation type
+                actions = []
+                for violation in violations:
+                    guardrail_type = violation['type']
+                    policy_action = self.guardrail_policies.get(guardrail_type)
+                    
+                    if policy_action == GuardrailPolicy.RECORD_ONLY:
+                        actions.append(ViolationAction.ALLOW_OVERRIDE)
+                    elif policy_action == GuardrailPolicy.BLOCK:
+                        actions.append(ViolationAction.BLOCK)
+                    else:
+                        # No policy specified, block by default
+                        actions.append(ViolationAction.BLOCK)
+                
+                # Determine overall action: BLOCK takes precedence over ALLOW_OVERRIDE
+                if ViolationAction.BLOCK in actions:
+                    final_action = ViolationAction.BLOCK
+                else:
+                    final_action = ViolationAction.ALLOW_OVERRIDE
+                
+                if final_action == ViolationAction.BLOCK:
+                    # Format violation details for logging
+                    violation_details = []
+                    for v in violations:
+                        analysis = v.get('analysis') or {}
+                        detail = f"{v['type']}"
+                        if 'explanation' in analysis and analysis['explanation']:
+                            detail += f": {analysis['explanation']}"
+                        elif 'detected_topics' in analysis and analysis['detected_topics']:
+                            detail += f": detected {', '.join(analysis['detected_topics'])}"
+                        elif analysis.get('flagged'):
+                            detail += ": content flagged as potentially harmful"
+                        violation_details.append(detail)
 
-                violation_summary = "; ".join(violation_details)
-                logger.warning("Guardrail violations detected: %s", violation_summary)
-                return True
+                    violation_summary = "; ".join(violation_details)
+                    logger.warning("Blocking guardrail violations detected: %s", violation_summary)
+                    return ViolationResult(
+                        action=ViolationAction.BLOCK,
+                        violations=violations
+                    )
+                else:
+                    # ALLOW_OVERRIDE - violations present but allowed
+                    logger.debug("Guardrail violations detected but allowed: %s", 
+                               [v['type'] for v in violations])
+                    return ViolationResult(
+                        action=ViolationAction.ALLOW_OVERRIDE,
+                        violations=violations
+                    )
 
-        return False
+        return ViolationResult(action=ViolationAction.PASS)
+
+    async def validate_request(self, messages: List[Dict]) -> Dict:
+        """
+        Validate request messages against guardrails and raise exception if blocked
+
+        This is a convenience method that combines evaluate() and check_violations()
+        into a single call that automatically raises GuardrailViolation for blocked content.
+
+        Args:
+            messages: List of conversation messages in OpenAI format
+
+        Returns:
+            Dict containing evaluation results (only returned if request passes)
+
+        Raises:
+            GuardrailViolation: If guardrails block the request
+
+        Usage:
+            # Simple validation - throws exception if blocked
+            await guard.validate_request(messages)
+
+            # With custom handling
+            try:
+                result = await guard.validate_request(messages)
+                # Request passed, continue with LLM call
+            except GuardrailViolation as e:
+                # Handle blocked request
+                print(f"Request blocked: {e}")
+        """
+        evaluation_result = await self.evaluate(messages, "request")
+        violation_result = await self.check_violations(evaluation_result)
+
+        if violation_result.action == ViolationAction.BLOCK:
+            raise GuardrailViolation(
+                violation_type="request",
+                violations=violation_result.violations,
+                blocked_content=str(messages),
+                timing=evaluation_result.get("execution_time", {})
+            )
+
+        return evaluation_result
+
+    async def validate_response(self, messages: List[Dict]) -> Dict:
+        """
+        Validate response messages against guardrails and raise exception if blocked
+
+        This is a convenience method that combines evaluate() and check_violations()
+        into a single call that automatically raises GuardrailViolation for blocked content.
+
+        Args:
+            messages: List of conversation messages in OpenAI format (including assistant response)
+
+        Returns:
+            Dict containing evaluation results (only returned if response passes)
+
+        Raises:
+            GuardrailViolation: If guardrails block the response
+
+        Usage:
+            # Simple validation - throws exception if blocked
+            await guard.validate_response(messages)
+
+            # With custom handling
+            try:
+                result = await guard.validate_response(messages)
+                # Response passed
+            except GuardrailViolation as e:
+                # Handle blocked response
+                print(f"Response blocked: {e}")
+        """
+        evaluation_result = await self.evaluate(messages, "response")
+        violation_result = await self.check_violations(evaluation_result)
+
+        if violation_result.action == ViolationAction.BLOCK:
+            raise GuardrailViolation(
+                violation_type="response",
+                violations=violation_result.violations,
+                blocked_content=str(messages),
+                timing=evaluation_result.get("execution_time", {})
+            )
+
+        return evaluation_result
 
     async def guarded_call_parallel(self, messages: List[Dict], llm_func: Callable,
                                    *args, **kwargs) -> GuardedResponse:
@@ -606,28 +770,18 @@ class HaliosGuard:
                             request_time = time.time() - request_start
 
                             # Check for violations immediately
-                            if await self.check_violations(request_evaluation):
-                                # Extract violation details
-                                violation_details = []
-                                results = request_evaluation.get('result', [])
-                                for result in results:
-                                    if result.get('triggered', False):
-                                        violation_details.append({
-                                            'type': result.get('guardrail_type', 'unknown'),
-                                            'analysis': result.get('analysis', {}),
-                                            'guardrail_uuid': result.get('guardrail_uuid', 'unknown')
-                                        })
-                                
+                            violation_result = await self.check_violations(request_evaluation)
+                            if violation_result.action == ViolationAction.BLOCK:
                                 # Cancel LLM task if still running
                                 if not llm_done and llm_task in pending:
                                     llm_task.cancel()
                                     pending.discard(llm_task)
                                     logger.debug("Cancelled LLM task due to request guardrail violations")
 
-                                logger.warning(f"Request blocked: {len(violation_details)} violations detected")
+                                logger.warning(f"Request blocked: {len(violation_result.violations or [])} violations detected")
                                 return GuardedResponse(
                                     result=ExecutionResult.REQUEST_BLOCKED,
-                                    request_violations=violation_details,
+                                    request_violations=violation_result.violations or [],
                                     timing={
                                         "request_guardrails_time": request_time,
                                         "total_time": time.time() - start_time
@@ -656,21 +810,21 @@ class HaliosGuard:
             logger.debug("Evaluating response guardrails")
             response_start = time.time()
 
-            # Extract response content for guardrail evaluation
-            response_content = self._extract_response_content(llm_response)
-            full_conversation = messages + [{"role": "assistant", "content": response_content}]
+            # Extract response message for guardrail evaluation (includes tool calls)
+            response_message = self.extract_response_message(llm_response)
+            full_conversation = messages + [response_message]
             response_evaluation = await self.evaluate(full_conversation, "response")
 
             response_time = time.time() - response_start
 
             # Check for response violations
-            response_violations = response_evaluation.get("violations", [])
-            if response_violations:
-                logger.warning(f"Response blocked: {len(response_violations)} violations detected")
+            response_violation_result = await self.check_violations(response_evaluation)
+            if response_violation_result.action == ViolationAction.BLOCK:
+                logger.warning(f"Response blocked: {len(response_violation_result.violations or [])} violations detected")
                 return GuardedResponse(
                     result=ExecutionResult.RESPONSE_BLOCKED,
-                    original_response=response_content,
-                    response_violations=response_violations,
+                    original_response=response_message.get("content", ""),
+                    response_violations=response_violation_result.violations or [],
                     timing={
                         "request_guardrails_time": request_time,
                         "llm_time": llm_time,
@@ -688,7 +842,7 @@ class HaliosGuard:
                     (msg for msg in reversed(processed_messages) if msg.get("role") == "assistant"),
                     None
                 )
-                if assistant_msg and assistant_msg.get("content") != response_content:
+                if assistant_msg and assistant_msg.get("content") != response_message.get("content"):
                     final_response = assistant_msg["content"]  # Only return text if modified
                     logger.debug("Response was modified by guardrails")
 
@@ -700,7 +854,7 @@ class HaliosGuard:
             return GuardedResponse(
                 result=ExecutionResult.SUCCESS,
                 final_response=final_response,
-                original_response=response_content,
+                original_response=response_message.get("content", ""),
                 timing={
                     "request_guardrails_time": request_time,
                     "llm_time": llm_time,
@@ -721,196 +875,6 @@ class HaliosGuard:
                 error_message=str(e),
                 timing={"total_time": time.time() - start_time}
             )
-
-    def patch_function(self, original_func: Callable) -> Callable:
-        """
-        DEPRECATED: Create a guarded version of any async function
-
-        This method is deprecated and will be removed in a future version.
-        Use the @guarded_chat_completion decorator instead for new integrations.
-
-        Migration Guide:
-        OLD: guard.patch_function(your_llm_function)
-        NEW: @guarded_chat_completion(agent_id="your-agent")
-             async def your_llm_function(messages): ...
-
-        Benefits of Migration:
-        - Better performance with optimized guardrail evaluation
-        - Cleaner code without monkey-patching
-        - Easier testing and debugging
-        - Future-proof API compatibility
-
-        Args:
-            original_func: Original async function to wrap with guardrails
-
-        Returns:
-            Wrapped function with guardrail protection
-
-        Warning:
-            This method may be removed in version 2.0. Migrate to decorators
-            for better maintainability and performance.
-        """
-        warnings.warn(
-            "patch_function is deprecated. Use @guarded_chat_completion decorator instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        @wraps(original_func)
-        async def guarded_func(*args, **kwargs):
-            # Extract messages for guardrail evaluation
-            messages = self.extract_messages(*args, **kwargs)
-            if not messages:
-                logger.debug("No messages found, calling original function without guardrails")
-                return await original_func(*args, **kwargs)
-
-            total_start = time.time()
-            logger.debug("Starting guarded function call (parallel=%s)", self.parallel)
-
-            if self.parallel:
-                # Use parallel processing
-                async with self:
-                    result = await self.guarded_call_parallel(messages, original_func, *args, **kwargs)
-                    if result.result != ExecutionResult.SUCCESS:
-                        if result.result == ExecutionResult.REQUEST_BLOCKED:
-                            raise ValueError(result.error_message or "Request blocked by guardrails")
-                        elif result.result == ExecutionResult.RESPONSE_BLOCKED:
-                            raise ValueError(result.error_message or "Response blocked by guardrails")
-                        else:
-                            raise ValueError(result.error_message or "Guardrail evaluation failed")
-                    return result.final_response
-            else:
-                # Sequential execution: check request, then call LLM
-                logger.debug("Running request guardrails sequentially")
-                request_start = time.time()
-                request_result = await self.evaluate(messages, "request")
-                request_time = time.time() - request_start
-
-                if await self.check_violations(request_result):
-                    # Extract violation details for better error message
-                    violations = []
-                    results = request_result.get('result', [])
-                    for result in results:
-                        if result.get('triggered', False):
-                            violations.append(result.get('guardrail_type', 'unknown'))
-
-                    violation_types = ', '.join(violations) if violations else 'policy violation'
-                    error_msg = f"Request blocked by guardrails: {violation_types} detected"
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
-
-                logger.debug("Request guardrails passed, calling LLM")
-                llm_start = time.time()
-                response = await original_func(*args, **kwargs)
-                llm_time = time.time() - llm_start
-
-                # Always check response guardrails synchronously
-                logger.debug("Evaluating response guardrails")
-                response_start = time.time()
-                response_message = self.extract_response_message(response)
-                full_conversation = messages + [response_message]
-                response_result = await self.evaluate(full_conversation, "response")
-                response_time = time.time() - response_start
-
-                if await self.check_violations(response_result):
-                    # Extract violation details for better error message
-                    violations = []
-                    results = response_result.get('result', [])
-                    for result in results:
-                        if result.get('triggered', False):
-                            violations.append(result.get('guardrail_type', 'unknown'))
-
-                    violation_types = ', '.join(violations) if violations else 'policy violation'
-                    error_msg = f"Response blocked by guardrails: {violation_types} detected"
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
-
-                # Add timing info to response object
-                total_time = time.time() - total_start
-                if not hasattr(response, '_halios_timing'):
-                    response._halios_timing = {}
-
-                response._halios_timing.update({
-                    'request_guardrail_time': request_time,
-                    'llm_time': llm_time,
-                    'response_guardrail_time': response_time,
-                    'total_time': total_time,
-                    'mode': 'parallel' if self.parallel else 'sequential'
-                })
-
-                logger.debug("Guarded function completed successfully in %.3fs", total_time)
-                return response
-
-        return guarded_func
-
-    def patch(self, obj, method_name: str):
-        """
-        Patch a method on an object/class
-
-        Args:
-            obj: Object or class to patch
-            method_name: Name of method to patch
-        """
-        logger.debug("Patching %s.%s", obj.__class__.__name__, method_name)
-        original_method = getattr(obj, method_name)
-        guarded_method = self.patch_function(original_method)
-        setattr(obj, method_name, guarded_method)
-
-    def __call__(self, func: Callable) -> Callable:
-        """Use HaliosGuard as a decorator"""
-        return self.patch_function(func)
-
-    async def evaluate_input_async(self, input_text: str) -> GuardedResponse:
-        """
-        Evaluate input text through guardrails (async version)
-
-        Args:
-            input_text: The input text to evaluate
-
-        Returns:
-            GuardedResponse: Result of guardrail evaluation
-        """
-        messages = [{"role": "user", "content": input_text}]
-        result = await self.evaluate(messages, invocation_type="request")
-
-        # Check if any guardrails were triggered
-        triggered = result.get("guardrails_triggered", 0) > 0
-        execution_result = ExecutionResult.REQUEST_BLOCKED if triggered else ExecutionResult.SUCCESS
-
-        return GuardedResponse(
-            result=execution_result,
-            original_response=input_text,
-            request_violations=result.get("violations", []),
-            timing={"evaluation_time": result.get("evaluation_time", 0.0)}
-        )
-
-    async def evaluate_output_async(self, input_text: str, output_text: str) -> GuardedResponse:
-        """
-        Evaluate output text through guardrails (async version)
-
-        Args:
-            input_text: The original input text
-            output_text: The output text to evaluate
-
-        Returns:
-            GuardedResponse: Result of guardrail evaluation
-        """
-        messages = [
-            {"role": "user", "content": input_text},
-            {"role": "assistant", "content": output_text}
-        ]
-        result = await self.evaluate(messages, invocation_type="response")
-
-        # Check if any guardrails were triggered
-        triggered = result.get("guardrails_triggered", 0) > 0
-        execution_result = ExecutionResult.RESPONSE_BLOCKED if triggered else ExecutionResult.SUCCESS
-
-        return GuardedResponse(
-            result=execution_result,
-            final_response=output_text,
-            original_response=output_text,
-            response_violations=result.get("violations", []),
-            timing={"evaluation_time": result.get("evaluation_time", 0.0)}
-        )
 
     def _extract_chunk_content(self, chunk: Any) -> str:
         """Extract content from a streaming chunk"""
@@ -964,6 +928,11 @@ class HaliosGuard:
         """
         Stream LLM response with parallel guardrail evaluation
 
+        Guardrails are evaluated based on:
+        - Buffer size: When accumulated content reaches stream_buffer_size characters
+        - Time interval: When stream_check_interval seconds have elapsed since last check
+        - Whichever condition is met first triggers evaluation
+
         Args:
             messages: Chat messages for guardrail evaluation
             llm_func: Async generator function that yields streaming chunks
@@ -972,7 +941,9 @@ class HaliosGuard:
         Yields:
             Dict containing streaming events with guardrail evaluation
         """
-        logger.debug("Starting parallel streaming with guardrails")
+        logger.debug("Starting parallel streaming with guardrails (buffer_size=%s, check_interval=%s)",
+                    self.stream_buffer_size if self.stream_buffer_size else "disabled",
+                    f"{self.stream_check_interval:.2f}s" if self.stream_check_interval else "disabled")
 
         # Start request guardrail evaluation
         request_guardrails_task = asyncio.create_task(
@@ -981,6 +952,8 @@ class HaliosGuard:
         )
 
         buffer = ""
+        buffer_since_last_check = ""
+        last_check_time = time.time()
         request_evaluation = None
         request_guardrails_done = False
 
@@ -993,13 +966,13 @@ class HaliosGuard:
                 )
                 request_guardrails_done = True
                 
-                # Check for violations immediately
-                violations = [r for r in request_evaluation.get("results", []) if r.get("triggered")]
-                if violations:
-                    logger.warning("Request blocked by guardrails: %d violations", len(violations))
+                # Use check_violations to respect guardrail policies
+                violation_result = await self.check_violations(request_evaluation)
+                if violation_result.action == ViolationAction.BLOCK:
+                    logger.warning("Request blocked by guardrails: %d violations", len(violation_result.violations or []))
                     yield {
                         "type": "blocked",
-                        "violations": violations,
+                        "violations": violation_result.violations or [],
                         "message": "Request blocked by guardrails"
                     }
                     return
@@ -1011,6 +984,7 @@ class HaliosGuard:
                 chunk_content = self._extract_chunk_content(chunk)
                 if chunk_content:
                     buffer += chunk_content
+                    buffer_since_last_check += chunk_content
 
                     # Yield the chunk for real-time display
                     yield {
@@ -1019,33 +993,61 @@ class HaliosGuard:
                         "accumulated_length": len(buffer)
                     }
 
-                    # Check buffer size for guardrail evaluation
-                    if len(buffer) >= self.stream_buffer_size:
+                    # Check if we should evaluate guardrails based on configured thresholds
+                    current_time = time.time()
+                    time_since_last_check = current_time - last_check_time
+                    
+                    # Determine if we should check based on what's configured
+                    should_check = False
+                    if self.stream_buffer_size is not None and self.stream_check_interval is not None:
+                        # Both configured - check if either threshold is met
+                        should_check = (
+                            len(buffer_since_last_check) >= self.stream_buffer_size or
+                            time_since_last_check >= self.stream_check_interval
+                        )
+                    elif self.stream_buffer_size is not None:
+                        # Only buffer size configured - check only character threshold
+                        should_check = len(buffer_since_last_check) >= self.stream_buffer_size
+                    elif self.stream_check_interval is not None:
+                        # Only time interval configured - check only time threshold
+                        should_check = time_since_last_check >= self.stream_check_interval
+
+                    if should_check and buffer_since_last_check:
                         # Evaluate current buffer
                         buffer_messages = messages + [{"role": "assistant", "content": buffer}]
+                        
+                        logger.debug("Evaluating guardrails: %d chars accumulated (%.2fs since last check)",
+                                   len(buffer_since_last_check), time_since_last_check)
+                        
                         response_evaluation = await self.evaluate(buffer_messages, "response")
 
-                        violations = [r for r in response_evaluation.get("results", []) if r.get("triggered")]
-                        if violations:
-                            logger.warning("Response blocked during streaming: %d violations", len(violations))
+                        # Use check_violations to respect guardrail policies
+                        violation_result = await self.check_violations(response_evaluation)
+                        if violation_result.action == ViolationAction.BLOCK:
+                            logger.warning("Response blocked during streaming: %d violations", len(violation_result.violations or []))
                             yield {
                                 "type": "blocked",
-                                "violations": violations,
+                                "violations": violation_result.violations or [],
                                 "message": "Response blocked by guardrails during streaming"
                             }
                             return
+                        
+                        # Reset tracking for next check
+                        buffer_since_last_check = ""
+                        last_check_time = current_time
 
             # Final guardrail check on complete response if buffer has remaining content
             if buffer:
                 buffer_messages = messages + [{"role": "assistant", "content": buffer}]
                 response_evaluation = await self.evaluate(buffer_messages, "response")
                 
-                violations = [r for r in response_evaluation.get("results", []) if r.get("triggered")]
-                if violations:
-                    logger.warning("Response blocked after completion: %d violations", len(violations))
+                # Use check_violations to respect guardrail policies
+                violation_result = await self.check_violations(response_evaluation)
+                if violation_result.action == ViolationAction.BLOCK:
+                    logger.warning("Response blocked after completion: %d violations", len(violation_result.violations or []))
                     yield {
                         "type": "blocked",
-                        "violations": violations,
+                        "violations": violation_result.violations or [],
                         "message": "Response blocked by guardrails"
                     }
                     return
@@ -1083,593 +1085,17 @@ class HaliosGuard:
         await self.cleanup()
 
 
-class ParallelGuardedChat:
-    """
-    Legacy wrapper for HaliosGuard - DEPRECATED
-
-    This class is deprecated. Use HaliosGuard instead.
-    Maintained for backward compatibility.
-    """
-
-    def __init__(self, agent_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None,
-                 guardrail_timeout: float = 5.0, streaming: bool = False,
-                 stream_buffer_size: int = 50, stream_check_interval: float = 0.5):
-        """
-        Initialize ParallelGuardedChat (DEPRECATED)
-
-        Args:
-            agent_id: Agent ID for guardrail configuration
-            api_key: API key (defaults to HALIOS_API_KEY env var)
-            base_url: Base URL for guardrails API (defaults to HALIOS_BASE_URL env var)
-            guardrail_timeout: Timeout for guardrail operations
-            streaming: Enable streaming mode
-            stream_buffer_size: Characters to buffer before guardrail check
-            stream_check_interval: Time interval for guardrail checks
-        """
-        import warnings
-        warnings.warn(
-            "ParallelGuardedChat is deprecated. Use HaliosGuard instead.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-
-        # Delegate to unified HaliosGuard
-        self._guard = HaliosGuard(
-            agent_id=agent_id,
-            api_key=api_key,
-            base_url=base_url,
-            parallel=True,  # Always enable parallel processing for legacy compatibility
-            streaming=streaming,
-            stream_buffer_size=stream_buffer_size,
-            stream_check_interval=stream_check_interval,
-            guardrail_timeout=guardrail_timeout
-        )
-
-    async def __aenter__(self):
-        await self._guard.__aenter__()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._guard.__aexit__(exc_type, exc_val, exc_tb)
-
-    async def evaluate_guardrails(self, messages: List[Dict], invocation_type: str) -> Dict:
-        """Legacy method - delegates to HaliosGuard.evaluate"""
-        return await self._guard.evaluate(messages, invocation_type)
-
-    async def guarded_call_parallel(self, messages: List[Dict], llm_func: Callable,
-                                   *args, **kwargs) -> GuardedResponse:
-        """Legacy method - delegates to HaliosGuard.guarded_call_parallel"""
-        return await self._guard.guarded_call_parallel(messages, llm_func, *args, **kwargs)
-
-    async def guarded_stream_parallel(self, messages: List[Dict], llm_stream_func: Callable,
-                                     *args, **kwargs):
-        """Legacy method - delegates to HaliosGuard.guarded_stream_parallel"""
-        async for event in self._guard.guarded_stream_parallel(messages, llm_stream_func, *args, **kwargs):
-            yield event
-
-    def patch_function(self, func: Callable) -> Callable:
-        """Legacy method - delegates to HaliosGuard.patch_function"""
-        return self._guard.patch_function(func)
-
-    def _extract_response_content(self, response: Any) -> str:
-        """Legacy method - delegates to HaliosGuard._extract_response_content"""
-        return self._guard._extract_response_content(response)
-
-    def extract_messages(self, *args, **kwargs) -> List[Dict]:
-        """Legacy method - delegates to HaliosGuard.extract_messages"""
-        return self._guard.extract_messages(*args, **kwargs)
-
-    def extract_response_message(self, response: Any) -> Dict:
-        """Legacy method - delegates to HaliosGuard.extract_response_message"""
-        return self._guard.extract_response_message(response)
-
-    async def check_violations(self, guardrail_result: Dict) -> bool:
-        """Legacy method - delegates to HaliosGuard.check_violations"""
-        return await self._guard.check_violations(guardrail_result)
-
-    # Property forwarding for backward compatibility
-    @property
-    def agent_id(self):
-        """Forward agent_id from internal HaliosGuard"""
-        return self._guard.agent_id
-
-    @property
-    def api_key(self):
-        """Forward api_key from internal HaliosGuard"""
-        return self._guard.api_key
-
-    @property
-    def base_url(self):
-        """Forward base_url from internal HaliosGuard"""
-        return self._guard.base_url
-
-    @property
-    def streaming(self):
-        """Forward streaming from internal HaliosGuard"""
-        return self._guard.streaming
-
-    @property
-    def stream_buffer_size(self):
-        """Forward stream_buffer_size from internal HaliosGuard"""
-        return self._guard.stream_buffer_size
-
-    @property
-    def stream_check_interval(self):
-        """Forward stream_check_interval from internal HaliosGuard"""
-        return self._guard.stream_check_interval
-
-    @property
-    def guardrail_timeout(self):
-        """Forward guardrail_timeout from internal HaliosGuard"""
-        return self._guard.guardrail_timeout
-
-    @property
-    def parallel(self):
-        """Forward parallel from internal HaliosGuard"""
-        return self._guard.parallel
-
-    async def guarded_call_parallel(self, messages: List[Dict], llm_func: Callable,
-                                   *args, **kwargs) -> GuardedResponse:
-        """
-        Perform guarded LLM call with parallel processing optimization
-        
-        Args:
-            messages: Chat messages for guardrail evaluation
-            llm_func: Async function that makes the LLM call
-            *args, **kwargs: Arguments to pass to llm_func
-        
-        Returns:
-            GuardedResponse with detailed timing and violation information
-        """
-        start_time = time.time()
-        logger.debug("Starting parallel guarded call")
-        
-        # Create tasks for parallel execution
-        request_guardrails_task = asyncio.create_task(
-            self.evaluate_guardrails(messages, "request"),
-            name="request_guardrails"
-        )
-        llm_task = asyncio.create_task(
-            llm_func(*args, **kwargs),
-            name="llm_call"
-        )
-        
-        request_start = time.time()
-        llm_start = time.time()
-        
-        # Variables to track completion
-        request_evaluation = None
-        llm_response = None
-        request_guardrails_done = False
-        llm_done = False
-        request_time = 0.0
-        llm_time = 0.0
-        
-        # Wait for tasks to complete, handling whichever finishes first
-        pending = {request_guardrails_task, llm_task}
-        
-        try:
-            while pending:
-                # Wait for at least one task to complete
-                done, pending = await asyncio.wait(
-                    pending, 
-                    return_when=asyncio.FIRST_COMPLETED,
-                    timeout=self.guardrail_timeout
-                )
-                
-                if not done:
-                    # Timeout occurred
-                    logger.warning("Operations timed out after %ss", self.guardrail_timeout)
-                    for task in pending:
-                        task.cancel()
-                    
-                    return GuardedResponse(
-                        result=ExecutionResult.TIMEOUT,
-                        error_message=f"Operations timed out after {self.guardrail_timeout}s",
-                        timing={
-                            "total_time": time.time() - start_time,
-                            "timeout": self.guardrail_timeout
-                        }
-                    )
-                
-                # Process completed tasks
-                for task in done:
-                    task_name = task.get_name()
-                    
-                    try:
-                        result = await task
-                        
-                        if task_name == "request_guardrails":
-                            request_evaluation = result
-                            request_guardrails_done = True
-                            request_time = time.time() - request_start
-                            
-                            # Check for violations immediately
-                            violations = [r for r in request_evaluation.get("results", []) if r.get("triggered")]
-                            if violations:
-                                # Cancel LLM task if still running
-                                if not llm_done and llm_task in pending:
-                                    llm_task.cancel()
-                                    pending.discard(llm_task)
-                                    logger.debug("Cancelled LLM task due to request guardrail violations")
-                                
-                                logger.warning(f"Request blocked: {len(violations)} violations detected")
-                                return GuardedResponse(
-                                    result=ExecutionResult.REQUEST_BLOCKED,
-                                    request_violations=violations,
-                                    timing={
-                                        "request_guardrails_time": request_time,
-                                        "total_time": time.time() - start_time
-                                    }
-                                )
-                        
-                        elif task_name == "llm_call":
-                            llm_response = result
-                            llm_done = True
-                            llm_time = time.time() - llm_start
-                            logger.debug("LLM call completed in %.3fs", llm_time)
-                    
-                    except asyncio.CancelledError:
-                        logger.debug("Task %s was cancelled", task_name)
-                        pass  # Expected when cancelling tasks
-                    except Exception as e:
-                        logger.error("%s failed: %s", task_name, e)
-                        return GuardedResponse(
-                            result=ExecutionResult.ERROR,
-                            error_message="%s failed: %s" % (task_name, str(e)),
-                            timing={"total_time": time.time() - start_time}
-                        )
-            
-            # If we get here, both tasks completed successfully
-            # Now evaluate response guardrails synchronously
-            logger.debug("Evaluating response guardrails")
-            response_start = time.time()
-            
-            # Extract response content for guardrail evaluation
-            response_content = self._extract_response_content(llm_response)
-            full_conversation = messages + [{"role": "assistant", "content": response_content}]
-            response_evaluation = await self.evaluate_guardrails(full_conversation, "response")
-            
-            response_time = time.time() - response_start
-            
-            # Check for response violations
-            response_violations = [r for r in response_evaluation.get("results", []) if r.get("triggered")]
-            if response_violations:
-                logger.warning(f"Response blocked: {len(response_violations)} violations detected")
-                return GuardedResponse(
-                    result=ExecutionResult.RESPONSE_BLOCKED,
-                    original_response=response_content,
-                    response_violations=response_violations,
-                    timing={
-                        "request_guardrails_time": request_time,
-                        "llm_time": llm_time,
-                        "response_guardrails_time": response_time,
-                        "total_time": time.time() - start_time
-                    }
-                )
-            
-            # Check if response was modified
-            processed_messages = response_evaluation.get("processed_messages", [])
-            final_response = llm_response  # Return full response object, not just content
-            
-            if processed_messages:
-                assistant_msg = next(
-                    (msg for msg in reversed(processed_messages) if msg.get("role") == "assistant"), 
-                    None
-                )
-                if assistant_msg and assistant_msg.get("content") != response_content:
-                    final_response = assistant_msg["content"]  # Only return text if modified
-                    logger.debug("Response was modified by guardrails")
-            
-            total_time = time.time() - start_time
-            parallel_savings = max(0, request_time + llm_time - total_time)
-            
-            logger.debug(f"Parallel guarded call completed successfully in {total_time:.3f}s (saved {parallel_savings:.3f}s)")
-            
-            return GuardedResponse(
-                result=ExecutionResult.SUCCESS,
-                final_response=final_response,
-                original_response=response_content,
-                timing={
-                    "request_guardrails_time": request_time,
-                    "llm_time": llm_time,
-                    "response_guardrails_time": response_time,
-                    "total_time": total_time,
-                    "parallel_savings": parallel_savings
-                }
-            )
-        
-        except Exception as e:
-            # Cancel any remaining tasks
-            for task in pending:
-                task.cancel()
-            
-            logger.error("Parallel guarded call failed: %s", e)
-            return GuardedResponse(
-                result=ExecutionResult.ERROR,
-                error_message=str(e),
-                timing={"total_time": time.time() - start_time}
-            )
-    
-    async def guarded_stream_parallel(self, messages: List[Dict], llm_stream_func: Callable, 
-                                     *args, **kwargs):
-        """
-        Perform guarded streaming LLM call with real-time guardrail evaluation
-        
-        Args:
-            messages: Chat messages for guardrail evaluation
-            llm_stream_func: Async generator function that yields streaming response chunks
-            *args, **kwargs: Arguments to pass to llm_stream_func
-        
-        Yields:
-            Dict with keys: 'type' ('chunk', 'violation', 'error'), 'content', 'timing', etc.
-        """
-        if not self.streaming:
-            raise ValueError("Streaming not enabled. Set streaming=True in constructor.")
-        
-        start_time = time.time()
-        logger.debug("Starting streaming guarded call")
-        
-        # Run request guardrails first
-        request_start = time.time()
-        try:
-            request_evaluation = await self.evaluate_guardrails(messages, "request")
-            request_time = time.time() - request_start
-            
-            # Check for request violations
-            violations = [r for r in request_evaluation.get("results", []) if r.get("triggered")]
-            if violations:
-                logger.warning(f"Streaming request blocked: {len(violations)} violations detected")
-                yield {
-                    'type': 'violation',
-                    'stage': 'request',
-                    'violations': violations,
-                    'timing': {
-                        'request_guardrails_time': request_time,
-                        'total_time': time.time() - start_time
-                    }
-                }
-                return
-        
-        except Exception as e:
-            logger.error(f"Request guardrail evaluation failed: {e}")
-            yield {
-                'type': 'error',
-                'stage': 'request',
-                'error': str(e),
-                'timing': {'total_time': time.time() - start_time}
-            }
-            return
-        
-        # Start streaming LLM response
-        accumulated_content = ""
-        last_check_time = time.time()
-        last_check_length = 0
-        chunk_count = 0
-        llm_start = time.time()
-        
-        logger.debug("Starting LLM streaming")
-        
-        try:
-            async for chunk in llm_stream_func(messages, *args, **kwargs):
-                chunk_count += 1
-                
-                # Extract content from chunk
-                chunk_content = self._extract_chunk_content(chunk)
-                accumulated_content += chunk_content
-                
-                # Yield the chunk immediately for real-time streaming
-                yield {
-                    'type': 'chunk',
-                    'content': chunk_content,
-                    'accumulated_length': len(accumulated_content),
-                    'chunk_number': chunk_count
-                }
-                
-                # Check if we should evaluate guardrails
-                current_time = time.time()
-                should_check = (
-                    # Buffer size threshold
-                    len(accumulated_content) - last_check_length >= self.stream_buffer_size or
-                    # Time interval threshold
-                    current_time - last_check_time >= self.stream_check_interval
-                )
-                
-                if should_check and accumulated_content.strip():
-                    try:
-                        # Evaluate response guardrails on accumulated content
-                        eval_start = time.time()
-                        full_conversation = messages + [{"role": "assistant", "content": accumulated_content}]
-                        response_evaluation = await self.evaluate_guardrails(full_conversation, "response")
-                        eval_time = time.time() - eval_start
-                        
-                        # Check for violations
-                        response_violations = [r for r in response_evaluation.get("results", []) if r.get("triggered")]
-                        if response_violations:
-                            logger.warning(f"Streaming response blocked: {len(response_violations)} violations detected")
-                            yield {
-                                'type': 'violation',
-                                'stage': 'response',
-                                'violations': response_violations,
-                                'content_length': len(accumulated_content),
-                                'partial_content': accumulated_content,
-                                'timing': {
-                                    'request_guardrails_time': request_time,
-                                    'llm_time': time.time() - llm_start,
-                                    'response_guardrails_time': eval_time,
-                                    'total_time': time.time() - start_time
-                                }
-                            }
-                            return
-                        
-                        # Update check tracking
-                        last_check_time = current_time
-                        last_check_length = len(accumulated_content)
-                        
-                        # Yield guardrail check status
-                        yield {
-                            'type': 'guardrail_check',
-                            'status': 'passed',
-                            'content_length': len(accumulated_content),
-                            'check_time': eval_time
-                        }
-                        
-                    except Exception as e:
-                        # Don't stop streaming for guardrail evaluation errors
-                        logger.warning(f"Guardrail evaluation error during streaming: {e}")
-                        yield {
-                            'type': 'warning',
-                            'message': f"Guardrail evaluation failed: {str(e)}",
-                            'content_length': len(accumulated_content)
-                        }
-            
-            # Final guardrail check on complete response
-            if accumulated_content.strip():
-                logger.debug("Performing final guardrail check on complete response")
-                eval_start = time.time()
-                try:
-                    full_conversation = messages + [{"role": "assistant", "content": accumulated_content}]
-                    response_evaluation = await self.evaluate_guardrails(full_conversation, "response")
-                    eval_time = time.time() - eval_start
-                    
-                    response_violations = [r for r in response_evaluation.get("results", []) if r.get("triggered")]
-                    if response_violations:
-                        logger.warning(f"Final response check blocked: {len(response_violations)} violations detected")
-                        yield {
-                            'type': 'violation',
-                            'stage': 'response_final',
-                            'violations': response_violations,
-                            'content_length': len(accumulated_content),
-                            'final_content': accumulated_content,
-                            'timing': {
-                                'request_guardrails_time': request_time,
-                                'llm_time': time.time() - llm_start,
-                                'response_guardrails_time': eval_time,
-                                'total_time': time.time() - start_time
-                            }
-                        }
-                        return
-                    
-                    # Check if response was modified
-                    processed_messages = response_evaluation.get("processed_messages", [])
-                    final_response = accumulated_content
-                    
-                    if processed_messages:
-                        assistant_msg = next(
-                            (msg for msg in reversed(processed_messages) if msg.get("role") == "assistant"), 
-                            None
-                        )
-                        if assistant_msg and assistant_msg.get("content") != accumulated_content:
-                            final_response = assistant_msg["content"]
-                            logger.debug("Final response was modified by guardrails")
-                    
-                    # Streaming completed successfully
-                    logger.debug(f"Streaming completed successfully: {chunk_count} chunks, {len(final_response)} chars")
-                    yield {
-                        'type': 'completed',
-                        'final_content': final_response,
-                        'original_content': accumulated_content,
-                        'modified': final_response != accumulated_content,
-                        'total_chunks': chunk_count,
-                        'timing': {
-                            'request_guardrails_time': request_time,
-                            'llm_time': time.time() - llm_start,
-                            'response_guardrails_time': eval_time,
-                            'total_time': time.time() - start_time
-                        }
-                    }
-                    
-                except Exception as e:
-                    logger.error(f"Final guardrail check failed: {e}")
-                    yield {
-                        'type': 'error',
-                        'stage': 'response_final',
-                        'error': str(e),
-                        'partial_content': accumulated_content,
-                        'timing': {'total_time': time.time() - start_time}
-                    }
-            
-        except Exception as e:
-            logger.error(f"Streaming LLM call failed: {e}")
-            yield {
-                'type': 'error',
-                'stage': 'streaming',
-                'error': str(e),
-                'partial_content': accumulated_content,
-                'timing': {'total_time': time.time() - start_time}
-            }
-    
-    def _extract_chunk_content(self, chunk: Any) -> str:
-        """Extract content from a streaming chunk"""
-        # Handle OpenAI streaming format
-        if hasattr(chunk, 'choices') and chunk.choices:
-            if hasattr(chunk.choices[0], 'delta') and hasattr(chunk.choices[0].delta, 'content'):
-                return chunk.choices[0].delta.content or ""
-        
-        # Handle dict format
-        if isinstance(chunk, dict):
-            if 'choices' in chunk and chunk['choices']:
-                delta = chunk['choices'][0].get('delta', {})
-                return delta.get('content', '')
-            if 'content' in chunk:
-                return chunk['content']
-            if 'text' in chunk:
-                return chunk['text']
-        
-        # Handle string
-        if isinstance(chunk, str):
-            return chunk
-        
-        return ""
-    
-    def _extract_response_content(self, response: Any) -> str:
-        """Extract content from LLM response"""
-        # Handle OpenAI-style response
-        if hasattr(response, 'choices') and response.choices:
-            if hasattr(response.choices[0], 'message'):
-                return response.choices[0].message.content
-            if hasattr(response.choices[0], 'text'):
-                return response.choices[0].text
-        
-        # Handle dict response
-        if isinstance(response, dict):
-            if 'choices' in response:
-                return response['choices'][0].get('message', {}).get('content', '')
-            if 'output' in response:
-                return response['output']
-            if 'text' in response:
-                return response['text']
-        
-        # Handle string response
-        if isinstance(response, str):
-            return response
-            
-        return str(response)
-    
-    async def cleanup(self):
-        """Clean up resources - delegates to HaliosGuard"""
-        await self._guard.cleanup()
-
-    async def __aenter__(self):
-        await self._guard.__aenter__()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._guard.__aexit__(exc_type, exc_val, exc_tb)
-
-
-
-
-# Unified decorator for all chat completion guardrail functionality
 def guarded_chat_completion(
     agent_id: str,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     concurrent_guardrail_processing: bool = True,
     streaming_guardrails: bool = False,
-    stream_buffer_size: int = 50,
-    stream_check_interval: float = 0.5,
-    guardrail_timeout: float = 5.0
+    stream_buffer_size: Optional[int] = None,
+    stream_check_interval: Optional[float] = None,
+    guardrail_timeout: float = 5.0,
+    on_violation: Optional[Callable] = None,
+    guardrail_policies: Optional[Dict[str, GuardrailPolicy]] = None  # Future: per-guardrail policies
 ):
     """
     Unified decorator for chat completion guardrails with configurable options
@@ -1680,10 +1106,18 @@ def guarded_chat_completion(
         base_url: HaliosAI base URL (optional, uses HALIOS_BASE_URL env var)
         concurrent_guardrail_processing: Run guardrails and LLM call simultaneously (default: True)
         streaming_guardrails: Enable streaming with real-time guardrail evaluation (default: False)
-        stream_buffer_size: Characters to buffer before guardrail check (default: 50)
-        stream_check_interval: Time interval for guardrail checks in seconds (default: 0.5)
+        stream_buffer_size: Optional character count threshold for guardrail checks
+                          Specify alone for character-based only, or with stream_check_interval for hybrid
+                          If neither specified, defaults to 50
+        stream_check_interval: Optional time interval (seconds) for guardrail checks
+                             Specify alone for time-based only, or with stream_buffer_size for hybrid
+                             If neither specified, defaults to 0.5
         guardrail_timeout: Timeout for guardrail operations in seconds (default: 5.0)
-        http_client: Optional shared HTTP client for reuse across calls (default: None)
+        on_violation: Optional callback function called when violations occur (default: None)
+        guardrail_policies: Optional dict mapping guardrail types to actions (default: None)
+                          Actions: GuardrailPolicy.RECORD_ONLY (ALLOW_OVERRIDE), GuardrailPolicy.BLOCK. 
+                          Default behavior (no policy): BLOCK.
+                          Example: {"sensitive-data": GuardrailPolicy.BLOCK, "hate-speech": GuardrailPolicy.RECORD_ONLY}
 
     Returns:
         Decorator function that wraps async functions with guardrail protection
@@ -1709,12 +1143,17 @@ def guarded_chat_completion(
             async for chunk in openai_client.chat.completions.create(..., stream=True):
                 yield chunk
 
-        # Usage for streaming:
-        async for event in stream_llm(messages):
-            if event['type'] == 'chunk':
-                print(event['content'], end='')
-            elif event['type'] == 'completed':
-                print("\\nStream completed!")
+        # Custom guardrail policies
+        @guarded_chat_completion(
+            agent_id="your-agent-id",
+            guardrail_policies={
+                "sensitive-data": GuardrailPolicy.RECORD_ONLY,  # Allow violations (log but proceed)
+                "hate-speech": GuardrailPolicy.BLOCK,           # Block violations
+                "pii-detection": GuardrailPolicy.RECORD_ONLY    # Allow violations (log but proceed)
+            }
+        )
+        async def call_llm_with_policies(messages):
+            return await openai_client.chat.completions.create(...)
     """
     def decorator(func: Callable):
         if streaming_guardrails:
@@ -1738,12 +1177,24 @@ def guarded_chat_completion(
                     'streaming': True,
                     'stream_buffer_size': stream_buffer_size,
                     'stream_check_interval': stream_check_interval,
-                    'guardrail_timeout': guardrail_timeout
+                    'guardrail_timeout': guardrail_timeout,
+                    'guardrail_policies': guardrail_policies
                 }
                 async with HaliosGuard(**config) as guard_client:
                     # Remove messages from args since we've extracted it and pass it separately
                     remaining_args = args[1:] if args and isinstance(args[0], list) else args
                     async for event in guard_client.guarded_stream_parallel(messages, func, *remaining_args, **kwargs):
+                        # Check for violation events and throw exceptions for consistency
+                        if isinstance(event, dict) and event.get('type') == 'blocked':
+                            violations = event.get('violations', [])
+                            if not isinstance(violations, list):
+                                violations = []
+                            raise GuardrailViolation(
+                                violation_type="response",
+                                violations=violations,
+                                blocked_content=f"Streaming response blocked at {len(event.get('message', ''))}",
+                                timing={"streaming": True}
+                            )
                         yield event
             return streaming_wrapper
         else:
@@ -1766,7 +1217,8 @@ def guarded_chat_completion(
                     'base_url': base_url,
                     'parallel': concurrent_guardrail_processing,
                     'streaming': False,
-                    'guardrail_timeout': guardrail_timeout
+                    'guardrail_timeout': guardrail_timeout,
+                    'guardrail_policies': guardrail_policies
                 }
                 async with HaliosGuard(**config) as guard_client:
                     if concurrent_guardrail_processing:
@@ -1774,211 +1226,114 @@ def guarded_chat_completion(
                         remaining_args = args[1:] if args and isinstance(args[0], list) else args
                         result = await guard_client.guarded_call_parallel(messages, func, *remaining_args, **kwargs)
                         if result.result != ExecutionResult.SUCCESS:
+                            violations = result.request_violations or result.response_violations or []
+                            
                             if result.result == ExecutionResult.REQUEST_BLOCKED:
-                                raise ValueError(result.error_message or "Request blocked by guardrails")
+                                violation = GuardrailViolation(
+                                    violation_type="request",
+                                    violations=violations,
+                                    blocked_content=str(messages),
+                                    timing=result.timing
+                                )
                             elif result.result == ExecutionResult.RESPONSE_BLOCKED:
-                                raise ValueError(result.error_message or "Response blocked by guardrails")
+                                violation = GuardrailViolation(
+                                    violation_type="response", 
+                                    violations=violations,
+                                    blocked_content=result.original_response,
+                                    timing=result.timing
+                                )
                             else:
                                 raise ValueError(result.error_message or "Guardrail evaluation failed")
+                            
+                            # Call custom violation handler if provided
+                            if on_violation:
+                                on_violation(violation)
+                            
+                            # Raise the custom exception
+                            raise violation
                         return result.final_response
                     else:
-                        # Sequential processing using patch_function
-                        guarded_func = guard_client.patch_function(func)
-                        # For sequential processing, keep all original args since patch_function extracts messages internally
-                        return await guarded_func(*args, **kwargs)
+                        # Sequential processing: check request, then call LLM, then check response
+                        logger.debug("Running request guardrails sequentially")
+                        request_start = time.time()
+                        request_result = await guard_client.evaluate(messages, "request")
+                        request_time = time.time() - request_start
+
+                        if (await guard_client.check_violations(request_result)).action == ViolationAction.BLOCK:
+                            violation_result = await guard_client.check_violations(request_result)
+                            
+                            violation = GuardrailViolation(
+                                violation_type="request",
+                                violations=violation_result.violations or [],
+                                blocked_content=str(messages),
+                                timing={'request_guardrail_time': request_time}
+                            )
+                            
+                            if on_violation:
+                                on_violation(violation)
+                            
+                            raise violation
+
+                        logger.debug("Request guardrails passed, calling LLM")
+                        llm_start = time.time()
+                        response = await func(*args, **kwargs)
+                        llm_time = time.time() - llm_start
+
+                        # Always check response guardrails synchronously
+                        logger.debug("Evaluating response guardrails")
+                        response_start = time.time()
+                        response_message = guard_client.extract_response_message(response)
+                        full_conversation = messages + [response_message]
+                        response_result = await guard_client.evaluate(full_conversation, "response")
+                        response_time = time.time() - response_start
+
+                        if (await guard_client.check_violations(response_result)).action == ViolationAction.BLOCK:
+                            violation_result = await guard_client.check_violations(response_result)
+                            
+                            violation = GuardrailViolation(
+                                violation_type="response",
+                                violations=violation_result.violations or [],
+                                blocked_content=str(response_message),
+                                timing={
+                                    'request_guardrail_time': request_time,
+                                    'llm_time': llm_time,
+                                    'response_guardrail_time': response_time
+                                }
+                            )
+                            
+                            if on_violation:
+                                on_violation(violation)
+                            
+                            raise violation
+
+                        # Add timing info to response object
+                        total_time = request_time + llm_time + response_time
+                        if isinstance(response, dict):
+                            # For dict responses, add timing as a key
+                            if '_halios_timing' not in response:
+                                response['_halios_timing'] = {}
+                            response['_halios_timing'].update({
+                                'request_guardrail_time': request_time,
+                                'llm_time': llm_time,
+                                'response_guardrail_time': response_time,
+                                'total_time': total_time,
+                                'mode': 'sequential'
+                            })
+                        else:
+                            # For object responses, add as attribute
+                            if not hasattr(response, '_halios_timing'):
+                                response._halios_timing = {}
+                            response._halios_timing.update({
+                                'request_guardrail_time': request_time,
+                                'llm_time': llm_time,
+                                'response_guardrail_time': response_time,
+                                'total_time': total_time,
+                                'mode': 'sequential'
+                            })
+
+                        logger.debug("Guarded function completed successfully in %.3fs", request_time + llm_time + response_time)
+                        return response
             return wrapper
     return decorator
 
 
-# =============================================================================
-# LEGACY COMPATIBILITY FUNCTIONS - DEPRECATED
-# =============================================================================
-# These functions provide backward compatibility but are deprecated.
-# They exist to ease migration from older SDK versions.
-#
-# Migration Timeline:
-# - Current: Functions work but emit deprecation warnings
-# - Future: Functions will be removed in a major version update
-#
-# Recommended Migration:
-#   OLD: guard(agent_id="your-agent")
-#   NEW: @guarded_chat_completion(agent_id="your-agent")
-# =============================================================================
-
-def guard(agent_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None, parallel: bool = False):
-    """
-    DEPRECATED: Create a HaliosGuard instance
-
-    This function creates a HaliosGuard instance for manual guardrail evaluation.
-    It is deprecated in favor of the @guarded_chat_completion decorator which
-    provides a more convenient and maintainable API.
-
-    Args:
-        agent_id: Agent ID for guardrail configuration
-        api_key: API key (defaults to HALIOS_API_KEY env var)
-        base_url: Base URL for guardrails API (defaults to HALIOS_BASE_URL env var)
-        parallel: Enable parallel execution of guardrails and LLM calls
-
-    Returns:
-        HaliosGuard instance that can be used as decorator or patcher
-
-    Migration:
-        Instead of: guard_instance = guard("your-agent")
-        Use: @guarded_chat_completion(agent_id="your-agent")
-    """
-    logger.warning("guard() is deprecated. Use guarded_chat_completion() decorator instead.")
-    return HaliosGuard(agent_id, api_key, base_url, parallel)
-
-
-def parallel_guarded_chat(**config):
-    """
-    DEPRECATED: Decorator factory for parallel guarded chat
-
-    This function creates a decorator for parallel guardrail processing.
-    It is deprecated in favor of the unified @guarded_chat_completion decorator.
-
-    Args:
-        **config: Configuration parameters including:
-            - app_id: Agent ID (required)
-            - api_key: API key (optional)
-            - base_url: Base URL (optional)
-            - streaming: Enable streaming support (optional)
-
-    Returns:
-        Decorator function that wraps async functions with parallel guardrail processing
-
-    Migration:
-        Instead of: @parallel_guarded_chat(app_id="your-agent")
-        Use: @guarded_chat_completion(agent_id="your-agent", concurrent_guardrail_processing=True)
-    """
-    logger.warning("parallel_guarded_chat() is deprecated. Use guarded_chat_completion(concurrent_guardrail_processing=True) instead.")
-    # Map to new decorator
-    streaming = config.pop('streaming', False)
-    app_id = config.pop('app_id')
-
-    return guarded_chat_completion(
-        agent_id=app_id,
-        concurrent_guardrail_processing=True,
-        streaming_guardrails=streaming,
-        **config
-    )
-
-
-def streaming_guarded_chat(app_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None,
-                          stream_buffer_size: int = 50, stream_check_interval: float = 0.5,
-                          guardrail_timeout: float = 5.0):
-    """
-    Decorator factory for streaming guarded chat (Legacy - use guarded_chat_completion instead)
-    """
-    logger.warning("streaming_guarded_chat() is deprecated. Use guarded_chat_completion(streaming_guardrails=True) instead.")
-    
-    return guarded_chat_completion(
-        agent_id=app_id,
-        api_key=api_key,
-        base_url=base_url,
-        concurrent_guardrail_processing=True,
-        streaming_guardrails=True,
-        stream_buffer_size=stream_buffer_size,
-        stream_check_interval=stream_check_interval,
-        guardrail_timeout=guardrail_timeout
-    )
-
-
-# =============================================================================
-# LEGACY PATCHING FUNCTIONS - DEPRECATED
-# =============================================================================
-# These functions are deprecated in favor of the unified decorator approach.
-# They perform monkey-patching of LLM client libraries, which is less maintainable
-# and can cause issues with library updates.
-#
-# Migration Guide:
-#   OLD: patch_all(agent_id="your-agent")
-#   NEW: @guarded_chat_completion(agent_id="your-agent")
-#
-# Benefits of new approach:
-# - No monkey-patching required
-# - Better type safety and IDE support
-# - Cleaner error handling
-# - More predictable behavior
-# =============================================================================
-
-def patch_openai(guard_instance: HaliosGuard):
-    """
-    DEPRECATED: Patch OpenAI client with HaliosAI guardrails
-
-    This function monkey-patches the OpenAI library to automatically apply
-    guardrails to all chat completion calls. This approach is deprecated
-    in favor of the @guarded_chat_completion decorator.
-
-    Args:
-        guard_instance: HaliosGuard instance to use for patching
-
-    Warning:
-        This function modifies global state and may cause issues with
-        OpenAI library updates or other code that depends on the original
-        OpenAI client behavior.
-    """
-    logger.warning("patch_openai() is deprecated. Use @guarded_chat_completion decorator instead.")
-    try:
-        import openai
-        guard_instance.patch(openai.OpenAI.chat.completions, 'create')
-        guard_instance.patch(openai.AsyncOpenAI.chat.completions, 'create')
-        logger.info("OpenAI client patched with HaliosAI guardrails")
-    except ImportError:
-        logger.warning("OpenAI not installed, skipping OpenAI patching")
-
-
-def patch_anthropic(guard_instance: HaliosGuard):
-    """
-    DEPRECATED: Patch Anthropic client with HaliosAI guardrails
-
-    This function monkey-patches the Anthropic library to automatically apply
-    guardrails to all message calls. This approach is deprecated in favor of
-    the @guarded_chat_completion decorator.
-
-    Args:
-        guard_instance: HaliosGuard instance to use for patching
-
-    Warning:
-        This function modifies global state and may cause issues with
-        Anthropic library updates or other code that depends on the original
-        Anthropic client behavior.
-    """
-    logger.warning("patch_anthropic() is deprecated. Use @guarded_chat_completion decorator instead.")
-    try:
-        import anthropic
-        guard_instance.patch(anthropic.Anthropic.messages, 'create')
-        guard_instance.patch(anthropic.AsyncAnthropic.messages, 'create')
-        logger.info("Anthropic client patched with HaliosAI guardrails")
-    except ImportError:
-        logger.warning("Anthropic not installed, skipping Anthropic patching")
-
-
-def patch_all(app_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None):
-    """
-    DEPRECATED: Auto-patch all detected LLM clients and frameworks
-
-    This function automatically detects and patches all available LLM client
-    libraries (OpenAI, Anthropic, etc.) with HaliosAI guardrails. This approach
-    is deprecated in favor of explicit decorator usage.
-
-    Args:
-        app_id: Agent ID for guardrail configuration
-        api_key: API key (defaults to HALIOS_API_KEY env var)
-        base_url: Base URL for guardrails API (defaults to HALIOS_BASE_URL env var)
-
-    Returns:
-        HaliosGuard instance (for advanced usage)
-
-    Warning:
-        This function performs global monkey-patching and may interfere with
-        other code that depends on unmodified LLM client behavior. Use the
-        @guarded_chat_completion decorator instead for better control and
-        maintainability.
-    """
-    logger.warning("patch_all() is deprecated. Use @guarded_chat_completion decorator instead.")
-    halios_guard = guard(app_id, api_key, base_url)
-    patch_openai(halios_guard)
-    patch_anthropic(halios_guard)
-
-    return halios_guard

@@ -1,53 +1,86 @@
 # HaliosAI SDK Examples
 
-This directory contains practical examples demonstrating various HaliosAI SDK features and integration patterns. Each example builds on the previous one, starting with basic usage and progressing to advanced scenarios.
-
-## Learning Path
-
-1. **Start here**: `01_basic_usage.py` - Learn the fundamentals
-2. **Then try**: `02_streaming_guardrails.py` - Add streaming support if you need one
-3. **Next**: `03_tool_calling_simple.py` - Verify tool calling scenarios essential for agentic functionality
-4. **Try**: `04_context_manager_pattern.py` - Powerful DIY approach for complex integrations
-5. **Finally**: `05_openai_agents_guardrails_integration.py` - OpenaAI Agents Framework integration
-
-
 ## Prerequisites
 
-Before running these examples, ensure you have:
+All examples require:
 
-1. **HaliosAI SDK installed**:
-   ```bash
-   pip install haliosai
-   ```
+1. **Create your agent** in HaliosAI dashboard for YOUR specific use case
+   - Define agent persona (e.g., "HR support bot", "E-commerce customer service", etc.)
+   - Configure appropriate guardrails for your domain
 
-2. **Required environment variables**:
+2. **Set environment variables:**
    ```bash
    export HALIOS_API_KEY="your-halios-api-key"
    export HALIOS_AGENT_ID="your-agent-id"
-   export HALIOS_BASE_URL="https://api.halioslabs.com"  # Optional
+   export OPENAI_API_KEY="your-openai-key"
    ```
 
-3. **LLM provider API keys** (depending on examples):
-   ```bash
-   export GEMINI_API_KEY="your-gemini-key"     # For Gemini examples
-   export OPENAI_API_KEY="your-openai-key"     # For OpenAI examples
-   ```
+## Examples
 
-## Examples Overview
+### 🚀 Recommended Starting Point
 
-### 1. Basic Usage (`01_basic_usage.py`)
-**Complexity: Beginner** | **Provider: OpenAI**
+**`06_interactive_chatbot.py`** - Interactive chat session
+- Works with ANY agent configuration
+- Type your own messages relevant to your agent's persona
+- See guardrails in action in real-time
+- Best way to explore the SDK!
 
-Demonstrates the fundamental usage of HaliosAI guardrails with both parallel and sequential processing modes. Shows how to protect LLM calls with automatic request and response guardrail evaluation.
+### 📚 SDK Mechanics
 
-**Key Features:**
-- Simple `@guarded_chat_completion` decorator usage
-- Parallel processing (guardrails run concurrently with LLM calls)
-- Sequential processing (guardrails run before LLM calls)
-- Detailed violation reporting and timing metrics
-- Error handling for different scenarios
+**`01_basic_usage.py`** - Simple decorator pattern
+- Shows basic `@guarded_chat_completion` usage
+- Request/response guardrail evaluation
+- Exception handling
 
-**Run it:**
+**`02_streaming_response_guardrails.py`** - Streaming responses
+- Real-time streaming with guardrails
+- Character-based and time-based buffering
+- Hybrid buffering modes
+
+**`03_tool_calling_simple.py`** - Tool/function calling
+- Guardrails for function calling scenarios
+- Tool invocation tracking
+
+**`05_tool_calling_advanced.py`** - Advanced tool calling with comprehensive guardrails
+- Request validation
+- Tool result validation (prevents data leakage)
+- Response validation
+- Context manager pattern for fine-grained control
+
+**`04_context_manager_pattern.py`** - Manual control
+- Context manager for explicit guardrail calls
+- Separate request/response validation
+
+**`05_openai_agents_guardrails_integration.py`** - OpenAI Agents framework
+- Integration with OpenAI Agents SDK
+- Multi-agent workflows
+
+## Running Examples
+
+⚠️  **Important:** Update test messages in each example to match YOUR agent's persona!
+
+```bash
+# Interactive (recommended!)
+python examples/06_interactive_chatbot.py
+
+# Basic usage
+python examples/01_basic_usage.py
+
+# Streaming
+python examples/02_streaming_response_guardrails.py
+```
+
+## Customization
+
+Each example includes placeholder messages. **You must customize these** to match your agent's configured persona:
+
+- ❌ DON'T use generic messages with a specialized agent
+- ✅ DO use messages relevant to your agent's domain
+
+Example:
+- HR Agent → "I need help with my benefits"
+- E-commerce → "Where is my order?"
+- Code Assistant → "How do I implement binary search?"
 ```bash
 python 01_basic_usage.py
 ```

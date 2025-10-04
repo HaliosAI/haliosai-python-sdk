@@ -67,7 +67,7 @@ class HaliosInputGuardrail(InputGuardrail):
     Args:
         agent_id: Your Halios agent ID
         api_key: Halios API key (optional, uses environment variable if not provided)
-        base_url: Halios API base URL (optional, defaults to http://localhost:2000)
+        base_url: Halios API base URL (optional, defaults to https://api.halios.ai)
         name: Guardrail name for tracing (optional)
     
     Example:
@@ -201,7 +201,7 @@ class HaliosOutputGuardrail(OutputGuardrail):
     Args:
         agent_id: Your Halios agent ID
         api_key: Halios API key (optional, uses environment variable if not provided)
-        base_url: Halios API base URL (optional, defaults to http://localhost:2000)
+        base_url: Halios API base URL (optional, defaults to https://api.halios.ai)
         name: Guardrail name for tracing (optional)
     
     Example:

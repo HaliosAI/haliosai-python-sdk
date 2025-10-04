@@ -7,18 +7,15 @@ Provides simple patching, parallel processing, streaming support, and multi-agen
 
 from .client import (
     HaliosGuard,
-    ParallelGuardedChat,
     ExecutionResult,
+    GuardedResponse,
+    GuardrailViolation,
+    ViolationAction,
+    GuardrailPolicy,
+    ViolationResult,
     # Main unified decorator
     guarded_chat_completion,
-    # Legacy decorators (deprecated)
-    guard,
-    parallel_guarded_chat,
-    streaming_guarded_chat,
     # Utility functions
-    patch_openai,
-    patch_anthropic,
-    patch_all,
 )
 from .config import setup_logging
 
@@ -34,25 +31,20 @@ try:
 except ImportError:
     _OPENAI_AGENTS_AVAILABLE = False
 
-__version__ = "1.0.0"
 __author__ = "HaliosLabs"
-__email__ = "support@halioslabs.com"
+__email__ = "support@halios.ai"
 
 __all__ = [
     # Core classes
     "HaliosGuard",
-    "ParallelGuardedChat", 
     "ExecutionResult",
+    "GuardedResponse",
+    "GuardrailViolation",
+    "ViolationAction",
+    "GuardrailPolicy",
+    "ViolationResult",
     # Main decorator (recommended)
     "guarded_chat_completion",
-    # Legacy decorators
-    "guard",
-    "parallel_guarded_chat", 
-    "streaming_guarded_chat",
-    # Utility functions
-    "patch_openai",
-    "patch_anthropic", 
-    "patch_all",
     # Configuration
     "setup_logging",
 ]

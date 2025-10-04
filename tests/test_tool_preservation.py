@@ -24,7 +24,7 @@ class TestToolPreservation:
         """Mock guardrail response with violations"""
         return {
             "guardrails_triggered": 1,
-            "violations": [{"type": "content_policy", "severity": "high"}],
+            "result": [{"triggered": True, "guardrail_type": "content_policy", "severity": "high"}],
             "evaluation_time": 0.05
         }
 

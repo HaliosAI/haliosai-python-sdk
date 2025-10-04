@@ -623,6 +623,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=True
         )
 
@@ -669,6 +670,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=True,
             stream_buffer_size=10  # Small buffer for testing
         )
@@ -744,6 +746,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=True,
             stream_buffer_size=5  # Very small buffer to trigger check quickly
         )
@@ -783,6 +786,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=True
         )
 
@@ -822,6 +826,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=False  # Streaming disabled
         )
 
@@ -861,6 +866,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=True
         )
 
@@ -907,6 +913,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=True,
             stream_buffer_size=1000,  # Large buffer
             stream_check_interval=0.1  # Short time interval
@@ -957,6 +964,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=True,
             stream_buffer_size=1000  # Large buffer to avoid intermediate checks
         )
@@ -1101,6 +1109,7 @@ class TestStreamingGuardrailHandling:
 
         guard_client = HaliosGuard(
             agent_id="test-agent",
+            api_key="test-key",
             streaming=True,
             stream_buffer_size=5  # Small buffer to trigger check
         )

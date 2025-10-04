@@ -4,7 +4,7 @@ Basic tests for HaliosAI SDK
 import pytest
 import asyncio
 from unittest.mock import patch, MagicMock
-from haliosai import HaliosGuard, guard, ExecutionResult
+from haliosai import HaliosGuard, ExecutionResult, ViolationAction
 
 
 class TestHaliosGuard:
@@ -22,13 +22,6 @@ class TestHaliosGuard:
         assert guard_instance.api_key == "test-key"
         assert guard_instance.base_url == "http://test.com"
         assert guard_instance.parallel is False
-    
-    def test_guard_factory(self):
-        """Test guard factory function"""
-        guard_instance = guard(agent_id="test-agent")
-        
-        assert isinstance(guard_instance, HaliosGuard)
-        assert guard_instance.agent_id == "test-agent"
     
     def test_extract_messages_from_kwargs(self):
         """Test message extraction from kwargs"""
@@ -80,9 +73,10 @@ class TestHaliosGuard:
         guard_instance = HaliosGuard(agent_id="test-agent")
         
         result = {"guardrails_triggered": 0, "result": []}
-        has_violations = await guard_instance.check_violations(result)
+        violation_result = await guard_instance.check_violations(result)
         
-        assert has_violations is False
+        assert violation_result.has_violations is False
+        assert violation_result.action == ViolationAction.PASS
     
     @pytest.mark.asyncio
     async def test_check_violations_triggered(self):
@@ -99,9 +93,10 @@ class TestHaliosGuard:
                 }
             ]
         }
-        has_violations = await guard_instance.check_violations(result)
+        violation_result = await guard_instance.check_violations(result)
         
-        assert has_violations is True
+        assert violation_result.has_violations is True
+        assert violation_result.action == ViolationAction.BLOCK
     
     @pytest.mark.asyncio
     async def test_evaluate_success(self):

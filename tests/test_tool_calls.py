@@ -13,7 +13,7 @@ class TestToolCalls:
     @pytest.fixture
     def guard(self):
         """Create a HaliosGuard instance for testing"""
-        guard_instance = HaliosGuard(agent_id="test-agent")
+        guard_instance = HaliosGuard(agent_id="test-agent", api_key="test-key")
         # Initialize HTTP client for testing
         guard_instance._ensure_http_client_for_testing()
         return guard_instance

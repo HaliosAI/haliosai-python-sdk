@@ -1,130 +1,61 @@
 #!/usr/bin/env python3
 """
-HaliosAI SDK - Example 1: Basic Usage
+HaliosAI SDK - Basic Usage
 
-equirements:
-    pip install haliosai
-    pip install openai
+Demonstrates:
+- Decorator pattern for guardrails
+- Request/response evaluation
+- Exception handling for blocked content
 
-Environment Variables:
-    HALIOS_API_KEY: Your HaliosAI API key
-    HALIOS_AGENT_ID: Your agent ID
-    OPENAI_API_KEY: Your OpenAI API key
+Setup Required:
+1. Create agent in HaliosAI dashboard for YOUR use case
+2. Configure guardrails appropriate for your agent's persona
+3. Set environment variables:
+   export HALIOS_API_KEY="your-key"
+   export HALIOS_AGENT_ID="your-agent-id"
+   export OPENAI_API_KEY="your-openai-key"
 
+💡 For interactive testing: See ../halios_sdk_test/halios_demo.py
+
+⚠️  Update test messages below to match YOUR agent's persona!
 """
 
 import asyncio
 import os
 from openai import AsyncOpenAI
-from haliosai import guarded_chat_completion
+from haliosai import guarded_chat_completion, GuardrailViolation
 
-# Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "demo-key")
-HALIOS_AGENT_ID = os.getenv("HALIOS_AGENT_ID", "demo-agent")
+# Validate required environment variables
+REQUIRED_VARS = ["HALIOS_API_KEY", "HALIOS_AGENT_ID", "OPENAI_API_KEY"]
+missing = [var for var in REQUIRED_VARS if not os.getenv(var)]
+if missing:
+    raise EnvironmentError(f"Missing required environment variables: {', '.join(missing)}")
 
-# =============================================================================
-# SUPPORTED FUNCTION SIGNATURES for decorator
-# =============================================================================
-"""
-Supported function signatures for @guarded_chat_completion:
-
-1. Basic: messages as first positional argument
-   @guarded_chat_completion(agent_id="...")
-   async def func(messages): ...
-
-2. With additional parameters:
-   @guarded_chat_completion(agent_id="...")
-   async def func(messages, model="gpt-4", temperature=0.7): ...
-
-3. Messages as keyword argument:
-   @guarded_chat_completion(agent_id="...")
-   async def func(**kwargs):  # messages in kwargs
-
-4. Tool calling support:
-   @guarded_chat_completion(agent_id="...")
-   async def func(messages, tools=None): ...
-
-5. Streaming (returns async generator):
-   @guarded_chat_completion(agent_id="...", streaming_guardrails=True)
-   async def func(messages): yield chunk
-"""
-
-# =============================================================================
-# PARALLEL PROCESSING (DEFAULT) - Guardrails run concurrently with LLM
-# =============================================================================
+HALIOS_AGENT_ID = os.getenv("HALIOS_AGENT_ID")
 
 @guarded_chat_completion(agent_id=HALIOS_AGENT_ID)
-async def parallel_call(messages):
-    """Parallel processing: Guardrails run at the same time as LLM call"""
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return await client.chat.completions.create(
+async def call_llm(messages):
+    """Basic LLM call with guardrails"""
+    client = AsyncOpenAI()
+    response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
         max_tokens=100
     )
-
-# =============================================================================
-# SEQUENTIAL PROCESSING - Guardrails run before LLM call
-# =============================================================================
-
-@guarded_chat_completion(agent_id=HALIOS_AGENT_ID, concurrent_guardrail_processing=False)
-async def sequential_call(messages):
-    """Sequential processing: Guardrails run before LLM call"""
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return await client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        max_tokens=100
-    )
+    return response
 
 async def main():
-    """Run both parallel and sequential examples"""
-    print("🚀 HaliosAI Basic Usage - Parallel vs Sequential")
-    print("=" * 50)
-
-    # Single example message
-    messages = [{"role": "user", "content": "Hello! How are you?"}]
-
-    # Test Parallel Processing (Default)
-    print("\n1️⃣  PARALLEL PROCESSING (Default)")
-    print("   Guardrails run concurrently with LLM call")
-    print("-" * 40)
-
+    # 👇 CUSTOMIZE THESE MESSAGES FOR YOUR AGENT'S PERSONA
+    test_messages = [
+        {"role": "user", "content": "Hello, can you help me?"}
+    ]
+    
     try:
-        response = await parallel_call(messages)
-        if hasattr(response, 'choices'):
-            content = response.choices[0].message.content
-            print(f"✅ Parallel: {content}")
-        else:
-            print("✅ Parallel: Response received")
-    except Exception as e:
-        print(f"❌ Parallel Error: {e}")
-
-    # Test Sequential Processing
-    print("\n2️⃣  SEQUENTIAL PROCESSING")
-    print("   Guardrails run before LLM call")
-    print("-" * 40)
-
-    try:
-        response = await sequential_call(messages)
-        if hasattr(response, 'choices') and response.choices:
-            content = response.choices[0].message.content
-            print(f"✅ Sequential: {content}")
-        else:
-            print("✅ Sequential: Response received")
-    except ValueError as e:
-            print(f"❌ Sequential Error: {e}")
-    except Exception as e:
-        print(f"❌ Sequential Error: {e}")
-        import traceback
-        traceback.print_exc()
-
-    print("\n" + "=" * 50)
-    print("✨ Examples completed!")
-    print("\nKey Differences:")
-    print("• Parallel: Faster (concurrent execution)")
-    print("• Sequential: Safer (guardrails complete first)")
-    print("• Both protect against input/output violations")
+        response = await call_llm(test_messages)
+        content = response.choices[0].message.content
+        print(f"✓ Response: {content}")
+    except GuardrailViolation as e:
+        print(f"✗ Blocked: {e.violation_type} - {len(e.violations)} violation(s)")
 
 if __name__ == "__main__":
     asyncio.run(main())
