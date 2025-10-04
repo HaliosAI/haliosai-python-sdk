@@ -37,44 +37,99 @@ pip install haliosai[all]           # For all providers
 2. **Create an agent**: Follow the [documentation](https://docs.halios.ai) to create your first agent and configure guardrails
 3. **Keep your agent_id handy**: You'll need it for SDK integration
 
+Set required environment variables:
+```bash
+export HALIOS_API_KEY="your-api-key"
+export HALIOS_AGENT_ID="your-agent-id"
+export OPENAI_API_KEY="your-openai-key"  # For OpenAI examples
+```
+
 ## Quick Start
 
-### Basic Usage
+### Basic Usage (Decorator Pattern)
 
 ```python
 import asyncio
-from haliosai import guarded_chat_completion
+import os
+from openai import AsyncOpenAI
+from haliosai import guarded_chat_completion, GuardrailViolation
 
-# Basic usage with concurrent guardrail processing (default)
-@guarded_chat_completion(agent_id="your-agent-id")
+# Validate required environment variables
+REQUIRED_VARS = ["HALIOS_API_KEY", "HALIOS_AGENT_ID", "OPENAI_API_KEY"]
+missing = [var for var in REQUIRED_VARS if not os.getenv(var)]
+if missing:
+    raise EnvironmentError(f"Missing required environment variables: {', '.join(missing)}")
+
+HALIOS_AGENT_ID = os.getenv("HALIOS_AGENT_ID")
+
+@guarded_chat_completion(agent_id=HALIOS_AGENT_ID)
 async def call_llm(messages):
-    response = await openai_client.chat.completions.create(
-        model="gpt-4",
-        messages=messages
+    """LLM call with automatic guardrail evaluation"""
+    client = AsyncOpenAI()
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        max_tokens=100
     )
     return response
 
-# Use the guarded function
-messages = [{"role": "user", "content": "Hello!"}]
-response = await call_llm(messages)
+async def main():
+    # Customize messages for your agent's persona
+    messages = [{"role": "user", "content": "Hello, can you help me?"}]
+    
+    try:
+        response = await call_llm(messages)
+        content = response.choices[0].message.content
+        print(f"✓ Response: {content}")
+    except GuardrailViolation as e:
+        print(f"✗ Blocked: {e.violation_type} - {len(e.violations)} violation(s)")
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-### Configuration
+### Advanced Usage (Context Manager Pattern)
 
-Set your API key as an environment variable:
-```bash
-export HALIOS_API_KEY="your-api-key"
-```
+For fine-grained control over guardrail evaluation:
 
-Or pass it directly:
 ```python
-@guarded_chat_completion(
-    agent_id="your-agent-id",
-    api_key="your-api-key"
-)
-async def call_llm(messages):
-    # Your agent implementation
-    pass
+import asyncio
+import os
+from openai import AsyncOpenAI
+from haliosai import HaliosGuard, GuardrailViolation
+
+HALIOS_AGENT_ID = os.getenv("HALIOS_AGENT_ID")
+
+async def main():
+    messages = [{"role": "user", "content": "Hello, how can you help?"}]
+    
+    async with HaliosGuard(agent_id=HALIOS_AGENT_ID) as guard:
+        try:
+            # Step 1: Validate request
+            await guard.validate_request(messages)
+            print("✓ Request passed")
+            
+            # Step 2: Call LLM
+            client = AsyncOpenAI()
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                max_tokens=100
+            )
+            
+            # Step 3: Validate response
+            response_message = response.choices[0].message
+            full_conversation = messages + [{"role": "assistant", "content": response_message.content}]
+            await guard.validate_response(full_conversation)
+            
+            print("✓ Response passed")
+            print(f"Response: {response_message.content}")
+            
+        except GuardrailViolation as e:
+            print(f"✗ Blocked: {e.violation_type} - {len(e.violations)} violation(s)")
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ## OpenAI Agents Framework Integration
@@ -110,6 +165,59 @@ result = await runner.run(
 ## Examples
 
 Check out the `examples/` directory for complete working examples:
+
+### 🚀 Recommended Starting Point
+
+**`06_interactive_chatbot.py`** - Interactive chat session
+- Works with ANY agent configuration
+- Type your own messages relevant to your agent's persona
+- See guardrails in action in real-time
+- Best way to explore the SDK!
+
+### 📚 SDK Mechanics
+
+**`01_basic_usage.py`** - Simple decorator pattern
+- Shows basic `@guarded_chat_completion` usage
+- Request/response guardrail evaluation
+- Exception handling
+
+**`02_streaming_response_guardrails.py`** - Streaming responses
+- Real-time streaming with guardrails
+- Character-based and time-based buffering
+- Hybrid buffering modes
+
+**`03_tool_calling_simple.py`** - Tool/function calling
+- Guardrails for function calling scenarios
+- Tool invocation tracking
+
+**`04_context_manager_pattern.py`** - Manual control
+- Context manager for explicit guardrail calls
+- Separate request/response validation
+
+**`05_tool_calling_advanced.py`** - Advanced tool calling with comprehensive guardrails
+- Request validation
+- Tool result validation (prevents data leakage)
+- Response validation
+- Context manager pattern for fine-grained control
+
+**`05_openai_agents_guardrails_integration.py`** - OpenAI Agents framework
+- Integration with OpenAI Agents SDK
+- Multi-agent workflows
+
+### Running Examples
+
+⚠️  **Important:** Update test messages in each example to match YOUR agent's persona!
+
+```bash
+# Interactive (recommended!)
+python examples/06_interactive_chatbot.py
+
+# Basic usage
+python examples/01_basic_usage.py
+
+# Streaming
+python examples/02_streaming_response_guardrails.py
+```
 
 ## Advanced Usage
 
