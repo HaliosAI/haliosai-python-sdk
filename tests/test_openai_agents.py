@@ -616,7 +616,7 @@ class TestStreamingGuardrailHandling:
         # Mock request evaluation with violation
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "results": [{"triggered": True, "guardrail_type": "content_filter"}],
+            "result": [{"triggered": True, "guardrail_type": "content_filter"}],
             "guardrails_triggered": 1
         }
         mock_client_instance.post = AsyncMock(return_value=mock_response)
@@ -630,12 +630,8 @@ class TestStreamingGuardrailHandling:
         messages = [{"role": "user", "content": "Inappropriate content"}]
 
         # Mock streaming function
-        def mock_stream_func(*_args, **_kwargs):
-            async def _inner():
-                async def _gen():
-                    yield {"choices": [{"delta": {"content": "Response"}}]}
-                return _gen()
-            return _inner()
+        async def mock_stream_func(*_args, **_kwargs):
+            yield {"choices": [{"delta": {"content": "Response"}}]}
 
         # Collect streaming events
         events = []
@@ -738,7 +734,7 @@ class TestStreamingGuardrailHandling:
         # Mock response evaluation with violation
         mock_response_response = MagicMock()
         mock_response_response.json.return_value = {
-            "results": [{"triggered": True, "guardrail_type": "toxicity"}],
+            "result": [{"triggered": True, "guardrail_type": "toxicity"}],
             "guardrails_triggered": 1
         }
 
@@ -754,14 +750,10 @@ class TestStreamingGuardrailHandling:
         messages = [{"role": "user", "content": "Hello"}]
 
         # Mock streaming function
-        def mock_stream_func(*_args, **_kwargs):
-            async def _inner():
-                async def _gen():
-                    chunks = ["This ", "is ", "bad ", "content."]
-                    for chunk in chunks:
-                        yield {"choices": [{"delta": {"content": chunk}}]}
-                return _gen()
-            return _inner()
+        async def mock_stream_func(*_args, **_kwargs):
+            chunks = ["This ", "is ", "bad ", "content."]
+            for chunk in chunks:
+                yield {"choices": [{"delta": {"content": chunk}}]}
 
         # Collect streaming events
         events = []
@@ -1117,14 +1109,10 @@ class TestStreamingGuardrailHandling:
         messages = [{"role": "user", "content": "Hello"}]
 
         # Mock streaming function
-        def mock_stream_func(*_args, **_kwargs):
-            async def _inner():
-                async def _gen():
-                    chunks = ["This ", "will ", "trigger ", "a ", "check."]
-                    for chunk in chunks:
-                        yield {"choices": [{"delta": {"content": chunk}}]}
-                return _gen()
-            return _inner()
+        async def mock_stream_func(*_args, **_kwargs):
+            chunks = ["This ", "will ", "trigger ", "a ", "check."]
+            for chunk in chunks:
+                yield {"choices": [{"delta": {"content": chunk}}]}
 
         # Collect streaming events
         events = []

@@ -34,7 +34,7 @@ jobs:
         
     - name: Test with pytest
       run: |
-        pytest tests/ -v --tb=short
+        pytest tests/ -v --tb=short --disable-warnings
         
     - name: Test package installation
       run: |
