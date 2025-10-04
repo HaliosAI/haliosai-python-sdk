@@ -213,7 +213,7 @@ This is beta release. API and features may change. Please report any issues or f
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.9+
 - httpx >= 0.24.0
 - typing-extensions >= 4.0.0
 

@@ -25,7 +25,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -34,7 +33,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Security",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "httpx>=0.24.0",
     "typing-extensions>=4.0.0",
@@ -42,7 +41,7 @@ dependencies = [
 
 [project.optional-dependencies]
 openai = ["openai>=1.0.0"]
-agents = ["openai-agents>=0.1.0"]
+agents = ["openai-agents>=0.3.0"]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
@@ -52,6 +51,18 @@ dev = [
     "mypy>=1.0.0",
     "twine>=4.0.0",
     "build>=0.10.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "twine>=4.0.0",
+    "build>=0.10.0",
+    "openai>=1.0.0",
+    "openai-agents>=0.3.0"
 ]
 all = [
     "haliosai[openai,agents]"
@@ -73,7 +84,7 @@ haliosai = ["py.typed"]
 
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+target-version = ['py39', 'py310', 'py311', 'py312']
 include = '\.pyi?$'
 
 [tool.isort]
@@ -82,7 +93,7 @@ line_length = 100
 multi_line_output = 3
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.9"
 strict = false
 warn_return_any = true
 warn_unused_configs = true
