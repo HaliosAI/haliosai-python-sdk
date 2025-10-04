@@ -42,7 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 openai = ["openai>=1.0.0"]
-agents = ["openai-agents>=0.1.0"]
+agents = ["openai-agents>=0.3.3"]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
