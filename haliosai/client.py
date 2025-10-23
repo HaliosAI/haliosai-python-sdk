@@ -24,10 +24,10 @@ import time
 import logging
 import inspect
 import warnings
-from typing import List, Dict, Any, Callable, Optional
+from typing import List, Dict, Any, Callable, Optional, Union
 from functools import wraps
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 # Configure module logger
@@ -121,35 +121,165 @@ class GuardrailPolicy(Enum):
 
 
 @dataclass
-class ViolationResult:
-    """Result of guardrail violation check with detailed information"""
-    action: ViolationAction
-    violations: Optional[List[Dict]] = None
-    has_violations: bool = False
-    blocking_violations: bool = False
-    
+class Violation:
+    """Structured representation of a single guardrail violation"""
+    guardrail_type: str
+    guardrail_uuid: Optional[str] = None
+    analysis: Optional[Dict] = None
+    execution_time_ms: Optional[float] = None
+    errors: List[str] = field(default_factory=list)
+    timestamp: Optional[str] = None
+    triggered: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "Violation":
+        """Create Violation from dictionary representation"""
+        return cls(
+            guardrail_type=data.get("guardrail_type", data.get("type", "unknown")),
+            guardrail_uuid=data.get("guardrail_uuid", "unknown"),
+            analysis=data.get("analysis", {}),
+            execution_time_ms=data.get("execution_time_ms"),
+            errors=data.get("errors", []),
+            timestamp=data.get("timestamp"),
+            triggered=data.get("triggered", True)
+        )
+
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for backward compatibility"""
+        return {
+            "guardrail_type": self.guardrail_type,
+            "guardrail_uuid": self.guardrail_uuid,
+            "analysis": self.analysis,
+            "execution_time_ms": self.execution_time_ms,
+            "errors": self.errors,
+            "timestamp": self.timestamp,
+            "triggered": self.triggered
+        }
+
+
+@dataclass
+class ScanResult:
+    """Detailed result from guardrail scanning with all available metadata"""
+    status: str  # "safe", "blocked: {types}", or "error: {message}"
+    response_id: Optional[str] = None
+    request_id: Optional[str] = None
+    content_hash: Optional[str] = None
+    guardrails_applied: Optional[int] = None
+    guardrails_triggered: Optional[int] = None
+    processing_time_ms: Optional[float] = None
+    timestamp: Optional[str] = None
+    violations: List[Violation] = field(default_factory=list)
+    agent_slug: Optional[str] = None
+    agent_uuid: Optional[str] = None
+    processing_mode: Optional[str] = None
+    content_length: Optional[int] = None
+    guardrails_configured: Optional[List[str]] = None
+    message_count: Optional[int] = None
+
     def __post_init__(self):
-        if self.violations is None:
-            self.violations = []
-        self.has_violations = len(self.violations) > 0
-        self.blocking_violations = self.action == ViolationAction.BLOCK
+        pass  # No longer need to initialize violations list
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for DataFrame storage"""
+        return {
+            "status": self.status,
+            "response_id": self.response_id,
+            "request_id": self.request_id,
+            "content_hash": self.content_hash,
+            "guardrails_applied": self.guardrails_applied,
+            "guardrails_triggered": self.guardrails_triggered,
+            "processing_time_ms": self.processing_time_ms,
+            "timestamp": self.timestamp,
+            "agent_slug": self.agent_slug,
+            "agent_uuid": self.agent_uuid,
+            "processing_mode": self.processing_mode,
+            "content_length": self.content_length,
+            "guardrails_configured": self.guardrails_configured,
+            "message_count": self.message_count,
+            "violations": [v.to_dict() for v in self.violations]
+        }
+
+    def get(self, key: str, default=None):
+        """Dict-like access for backward compatibility"""
+        return getattr(self, key, default)
+
+    @classmethod
+    def from_evaluation_response(cls, evaluation_result: Dict, status: str) -> "ScanResult":
+        """Create ScanResult from evaluation API response"""
+        request_meta = evaluation_result.get("request", {})
+
+        return cls(
+            status=status,
+            response_id=evaluation_result.get("response_id"),
+            request_id=request_meta.get("request_id"),
+            content_hash=evaluation_result.get("content_hash"),
+            guardrails_applied=evaluation_result.get("guardrails_applied"),
+            guardrails_triggered=evaluation_result.get("guardrails_triggered"),
+            processing_time_ms=evaluation_result.get("processing_time_ms"),
+            timestamp=evaluation_result.get("timestamp"),
+            agent_slug=request_meta.get("agent_slug"),
+            agent_uuid=request_meta.get("agent_uuid"),
+            processing_mode=request_meta.get("processing_mode"),
+            content_length=request_meta.get("content_length"),
+            guardrails_configured=request_meta.get("guardrails_configured", []),
+            message_count=request_meta.get("message_count"),
+            violations=[
+                Violation(
+                    guardrail_uuid=r.get("guardrail_uuid"),
+                    guardrail_type=r.get("guardrail_type"),
+                    triggered=r.get("triggered", False),
+                    analysis=r.get("analysis"),
+                    execution_time_ms=r.get("execution_time_ms"),
+                    errors=r.get("errors", []),
+                    timestamp=r.get("timestamp")
+                )
+                for r in evaluation_result.get("result", [])
+                if r.get("triggered", False)
+            ]
+        )
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "ScanResult":
+        """Create ScanResult from dictionary (for backward compatibility)"""
+        violations_dict = data.get("violations", [])
+        violations = [Violation.from_dict(v) if isinstance(v, dict) else v for v in violations_dict]
+
+        return cls(
+            status=data.get("status", "unknown"),
+            response_id=data.get("response_id"),
+            request_id=data.get("request_id"),
+            content_hash=data.get("content_hash"),
+            guardrails_applied=data.get("guardrails_applied"),
+            guardrails_triggered=data.get("guardrails_triggered"),
+            processing_time_ms=data.get("processing_time_ms"),
+            timestamp=data.get("timestamp"),
+            violations=violations,
+            agent_slug=data.get("agent_slug"),
+            agent_uuid=data.get("agent_uuid"),
+            processing_mode=data.get("processing_mode"),
+            content_length=data.get("content_length"),
+            guardrails_configured=data.get("guardrails_configured", []),
+            message_count=data.get("message_count")
+        )
 
 
 class GuardrailViolation(Exception):
     """Raised when guardrails block content"""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  violation_type: str,  # "request" or "response"
-                 violations: List[Dict],
+                 violations: List[Violation],
                  blocked_content: Optional[str] = None,
-                 timing: Optional[Dict] = None):
+                 timing: Optional[Dict] = None,
+                 scan_result: Optional["ScanResult"] = None):
         self.violation_type = violation_type  # "request" or "response"
         self.violations = violations
         self.blocked_content = blocked_content
         self.timing = timing or {}
-        
+        self.scan_result = scan_result  # Full context available
+
         # Create user-friendly message
-        guardrail_types = [v.get('guardrail_type', v.get('type', 'unknown')) for v in violations]
+        guardrail_types = [v.guardrail_type for v in violations]
         super().__init__(f"Content blocked by {', '.join(guardrail_types)}")
 
 
@@ -159,18 +289,10 @@ class GuardedResponse:
     result: ExecutionResult
     final_response: Optional[Any] = None
     original_response: Optional[str] = None
-    request_violations: List[Dict] = None
-    response_violations: List[Dict] = None
-    timing: Dict[str, float] = None
+    request_violations: List[Violation] = field(default_factory=list)
+    response_violations: List[Violation] = field(default_factory=list)
+    timing: Dict[str, float] = field(default_factory=dict)
     error_message: Optional[str] = None
-    
-    def __post_init__(self):
-        if self.request_violations is None:
-            self.request_violations = []
-        if self.response_violations is None:
-            self.response_violations = []
-        if self.timing is None:
-            self.timing = {}
 
 
 class HaliosGuard:
@@ -315,7 +437,7 @@ class HaliosGuard:
             self.http_client = await _get_shared_http_client(self._http_client_base_url, 30.0)
         return self.http_client
 
-    async def evaluate(self, messages: List[Dict], invocation_type: str = "request") -> Dict:
+    async def evaluate(self, messages: List[Dict], invocation_type: str = "request") -> ScanResult:
         """
         Evaluate messages against configured guardrails
 
@@ -338,17 +460,13 @@ class HaliosGuard:
                            - "response": Post-call evaluation (after LLM response)
 
         Returns:
-            Dict containing detailed evaluation results:
-            {
-                "guardrails_triggered": int,  # Number of guardrails that triggered
-                "results": [...],             # Detailed results from each guardrail
-                "execution_time": float,     # Time taken for evaluation
-                "error": str|None           # Any error that occurred
-            }
+            ScanResult containing detailed evaluation results with all metadata
 
         Usage Examples:
             # Pre-call evaluation (recommended for safety)
             result = await guard.evaluate([{"role": "user", "content": "Hello"}], "request")
+            print(f"Response ID: {result.response_id}")
+            print(f"Violations: {len(result.violations)}")
 
             # Post-call evaluation (for response validation)
             result = await guard.evaluate(
@@ -367,8 +485,6 @@ class HaliosGuard:
             logger.warning("No API key provided. Set HALIOS_API_KEY environment variable or pass api_key parameter")
             raise ValueError("API key is required for guardrail evaluation")
 
-        logger.debug(f"Initialized unified HaliosGuard with agent_id={self.agent_id}, parallel={self.parallel}, streaming={self.streaming}")
-
         url = f"{self.base_url}/api/v3/agents/{self.agent_id}/evaluate"
 
         payload = {
@@ -385,10 +501,22 @@ class HaliosGuard:
             http_client = await self._get_http_client()
             response = await http_client.post(url, json=payload, headers=headers)
             response.raise_for_status()
-            result = response.json()
+            api_result = response.json()
 
-            logger.debug(f"Guardrail evaluation completed: {result.get('guardrails_triggered', 0)} triggered")
-            return result
+            logger.debug(f"Guardrail evaluation completed: {api_result.get('guardrails_triggered', 0)} triggered")
+
+            # Create ScanResult from API response
+            # For evaluate method, we don't have a simple status string, so we'll determine it
+            triggered_count = api_result.get('guardrails_triggered', 0)
+            if triggered_count > 0:
+                # Get violation types from results
+                results = api_result.get('result', [])
+                violation_types = [r.get('guardrail_type', 'unknown') for r in results if r.get('triggered', False)]
+                status = f"blocked: {', '.join(violation_types)}" if violation_types else "safe"
+            else:
+                status = "safe"
+
+            return ScanResult.from_evaluation_response(api_result, status)
 
         except httpx.HTTPError as e:
             logger.error(f"HTTP error during guardrail evaluation: {e}")
@@ -527,45 +655,32 @@ class HaliosGuard:
         logger.debug(f"Extracted content from response message: {len(content)} chars")
         return content
 
-    async def check_violations(self, guardrail_result: Dict) -> ViolationResult:
+    async def check_violations(self, guardrail_result: Union[Dict, ScanResult]) -> tuple[ViolationAction, List[Violation]]:
         """
         Check guardrail violations and determine appropriate action
 
         Args:
-            guardrail_result: Result from guardrail evaluation
+            guardrail_result: Result from guardrail evaluation (dict or ScanResult)
 
         Returns:
-            ViolationResult with action and violation details
+            Tuple of (action, violations_list)
         """
         if not guardrail_result:
-            return ViolationResult(action=ViolationAction.PASS)
+            return (ViolationAction.PASS, [])
 
-        # Check for modified_messages - allow if present (content was sanitized)
-        if 'modified_messages' in guardrail_result:
-            logger.debug("Modified messages present - allowing request to pass with sanitized content")
-            return ViolationResult(action=ViolationAction.ALLOW_OVERRIDE)
-
-        # Check if any guardrails were triggered
-        guardrails_triggered = guardrail_result.get('guardrails_triggered', 0)
-        if guardrails_triggered > 0:
-            # Find the specific violations
-            violations = []
-            results = guardrail_result.get('result', [])
-            for result in results:
-                if result.get('triggered', False):
-                    violations.append({
-                        'type': result.get('guardrail_type', 'unknown'),
-                        'analysis': result.get('analysis', {}),
-                        'guardrail_uuid': result.get('guardrail_uuid', 'unknown')
-                    })
-
-            if violations:
+        # Handle ScanResult input
+        if isinstance(guardrail_result, ScanResult):
+            # Check if any guardrails were triggered
+            guardrails_triggered = guardrail_result.guardrails_triggered or 0
+            if guardrails_triggered > 0 and guardrail_result.violations:
+                violations = guardrail_result.violations
+                
                 # Check guardrail policies for each violation type
                 actions = []
                 for violation in violations:
-                    guardrail_type = violation['type']
+                    guardrail_type = violation.guardrail_type
                     policy_action = self.guardrail_policies.get(guardrail_type)
-                    
+
                     if policy_action == GuardrailPolicy.RECORD_ONLY:
                         actions.append(ViolationAction.ALLOW_OVERRIDE)
                     elif policy_action == GuardrailPolicy.BLOCK:
@@ -573,19 +688,19 @@ class HaliosGuard:
                     else:
                         # No policy specified, block by default
                         actions.append(ViolationAction.BLOCK)
-                
+
                 # Determine overall action: BLOCK takes precedence over ALLOW_OVERRIDE
                 if ViolationAction.BLOCK in actions:
                     final_action = ViolationAction.BLOCK
                 else:
                     final_action = ViolationAction.ALLOW_OVERRIDE
-                
+
                 if final_action == ViolationAction.BLOCK:
                     # Format violation details for logging
                     violation_details = []
                     for v in violations:
-                        analysis = v.get('analysis') or {}
-                        detail = f"{v['type']}"
+                        analysis = v.analysis or {}
+                        detail = f"{v.guardrail_type}"
                         if 'explanation' in analysis and analysis['explanation']:
                             detail += f": {analysis['explanation']}"
                         elif 'detected_topics' in analysis and analysis['detected_topics']:
@@ -596,22 +711,78 @@ class HaliosGuard:
 
                     violation_summary = "; ".join(violation_details)
                     logger.warning("Blocking guardrail violations detected: %s", violation_summary)
-                    return ViolationResult(
-                        action=ViolationAction.BLOCK,
-                        violations=violations
-                    )
+                    return (ViolationAction.BLOCK, violations)
                 else:
                     # ALLOW_OVERRIDE - violations present but allowed
-                    logger.debug("Guardrail violations detected but allowed: %s", 
-                               [v['type'] for v in violations])
-                    return ViolationResult(
-                        action=ViolationAction.ALLOW_OVERRIDE,
-                        violations=violations
-                    )
+                    logger.debug("Guardrail violations detected but allowed: %s",
+                               [v.guardrail_type for v in violations])
+                    return (ViolationAction.ALLOW_OVERRIDE, violations)
 
-        return ViolationResult(action=ViolationAction.PASS)
+            return (ViolationAction.PASS, [])
 
-    async def validate_request(self, messages: List[Dict]) -> Dict:
+        # Legacy dict-based result handling
+        # Check for modified_messages - allow if present (content was sanitized)
+        if 'modified_messages' in guardrail_result:
+            logger.debug("Modified messages present - allowing request to pass with sanitized content")
+            return (ViolationAction.ALLOW_OVERRIDE, [])
+
+        # Check if any guardrails were triggered
+        guardrails_triggered = guardrail_result.get('guardrails_triggered', 0)
+        if guardrails_triggered > 0:
+            # Find the specific violations and convert to Violation objects
+            violations = []
+            results = guardrail_result.get('result', [])
+            for result in results:
+                if result.get('triggered', False):
+                    violations.append(Violation.from_dict(result))
+
+            if violations:
+                # Check guardrail policies for each violation type
+                actions = []
+                for violation in violations:
+                    guardrail_type = violation.guardrail_type
+                    policy_action = self.guardrail_policies.get(guardrail_type)
+
+                    if policy_action == GuardrailPolicy.RECORD_ONLY:
+                        actions.append(ViolationAction.ALLOW_OVERRIDE)
+                    elif policy_action == GuardrailPolicy.BLOCK:
+                        actions.append(ViolationAction.BLOCK)
+                    else:
+                        # No policy specified, block by default
+                        actions.append(ViolationAction.BLOCK)
+
+                # Determine overall action: BLOCK takes precedence over ALLOW_OVERRIDE
+                if ViolationAction.BLOCK in actions:
+                    final_action = ViolationAction.BLOCK
+                else:
+                    final_action = ViolationAction.ALLOW_OVERRIDE
+
+                if final_action == ViolationAction.BLOCK:
+                    # Format violation details for logging
+                    violation_details = []
+                    for v in violations:
+                        analysis = v.analysis or {}
+                        detail = f"{v.guardrail_type}"
+                        if 'explanation' in analysis and analysis['explanation']:
+                            detail += f": {analysis['explanation']}"
+                        elif 'detected_topics' in analysis and analysis['detected_topics']:
+                            detail += f": detected {', '.join(analysis['detected_topics'])}"
+                        elif analysis.get('flagged'):
+                            detail += ": content flagged as potentially harmful"
+                        violation_details.append(detail)
+
+                    violation_summary = "; ".join(violation_details)
+                    logger.warning("Blocking guardrail violations detected: %s", violation_summary)
+                    return (ViolationAction.BLOCK, violations)
+                else:
+                    # ALLOW_OVERRIDE - violations present but allowed
+                    logger.debug("Guardrail violations detected but allowed: %s",
+                               [v.guardrail_type for v in violations])
+                    return (ViolationAction.ALLOW_OVERRIDE, violations)
+
+        return (ViolationAction.PASS, [])
+
+    async def validate_request(self, messages: List[Dict]) -> Union[Dict, ScanResult]:
         """
         Validate request messages against guardrails and raise exception if blocked
 
@@ -640,19 +811,19 @@ class HaliosGuard:
                 print(f"Request blocked: {e}")
         """
         evaluation_result = await self.evaluate(messages, "request")
-        violation_result = await self.check_violations(evaluation_result)
+        action, violations = await self.check_violations(evaluation_result)
 
-        if violation_result.action == ViolationAction.BLOCK:
+        if action == ViolationAction.BLOCK:
             raise GuardrailViolation(
                 violation_type="request",
-                violations=violation_result.violations,
+                violations=violations,
                 blocked_content=str(messages),
-                timing=evaluation_result.get("execution_time", {})
+                scan_result=evaluation_result if isinstance(evaluation_result, ScanResult) else None
             )
 
         return evaluation_result
 
-    async def validate_response(self, messages: List[Dict]) -> Dict:
+    async def validate_response(self, messages: List[Dict]) -> Union[Dict, ScanResult]:
         """
         Validate response messages against guardrails and raise exception if blocked
 
@@ -681,14 +852,14 @@ class HaliosGuard:
                 print(f"Response blocked: {e}")
         """
         evaluation_result = await self.evaluate(messages, "response")
-        violation_result = await self.check_violations(evaluation_result)
+        action, violations = await self.check_violations(evaluation_result)
 
-        if violation_result.action == ViolationAction.BLOCK:
+        if action == ViolationAction.BLOCK:
             raise GuardrailViolation(
                 violation_type="response",
-                violations=violation_result.violations,
+                violations=violations,
                 blocked_content=str(messages),
-                timing=evaluation_result.get("execution_time", {})
+                scan_result=evaluation_result if isinstance(evaluation_result, ScanResult) else None
             )
 
         return evaluation_result
@@ -770,18 +941,18 @@ class HaliosGuard:
                             request_time = time.time() - request_start
 
                             # Check for violations immediately
-                            violation_result = await self.check_violations(request_evaluation)
-                            if violation_result.action == ViolationAction.BLOCK:
+                            action, violations = await self.check_violations(request_evaluation)
+                            if action == ViolationAction.BLOCK:
                                 # Cancel LLM task if still running
                                 if not llm_done and llm_task in pending:
                                     llm_task.cancel()
                                     pending.discard(llm_task)
                                     logger.debug("Cancelled LLM task due to request guardrail violations")
 
-                                logger.warning(f"Request blocked: {len(violation_result.violations or [])} violations detected")
+                                logger.warning(f"Request blocked: {len(violations)} violations detected")
                                 return GuardedResponse(
                                     result=ExecutionResult.REQUEST_BLOCKED,
-                                    request_violations=violation_result.violations or [],
+                                    request_violations=violations,
                                     timing={
                                         "request_guardrails_time": request_time,
                                         "total_time": time.time() - start_time
@@ -818,13 +989,13 @@ class HaliosGuard:
             response_time = time.time() - response_start
 
             # Check for response violations
-            response_violation_result = await self.check_violations(response_evaluation)
-            if response_violation_result.action == ViolationAction.BLOCK:
-                logger.warning(f"Response blocked: {len(response_violation_result.violations or [])} violations detected")
+            action, violations = await self.check_violations(response_evaluation)
+            if action == ViolationAction.BLOCK:
+                logger.warning(f"Response blocked: {len(violations)} violations detected")
                 return GuardedResponse(
                     result=ExecutionResult.RESPONSE_BLOCKED,
                     original_response=response_message.get("content", ""),
-                    response_violations=response_violation_result.violations or [],
+                    response_violations=violations,
                     timing={
                         "request_guardrails_time": request_time,
                         "llm_time": llm_time,
@@ -967,12 +1138,12 @@ class HaliosGuard:
                 request_guardrails_done = True
                 
                 # Use check_violations to respect guardrail policies
-                violation_result = await self.check_violations(request_evaluation)
-                if violation_result.action == ViolationAction.BLOCK:
-                    logger.warning("Request blocked by guardrails: %d violations", len(violation_result.violations or []))
+                action, violations = await self.check_violations(request_evaluation)
+                if action == ViolationAction.BLOCK:
+                    logger.warning("Request blocked by guardrails: %d violations", len(violations))
                     yield {
                         "type": "blocked",
-                        "violations": violation_result.violations or [],
+                        "violations": violations,
                         "message": "Request blocked by guardrails"
                     }
                     return
@@ -1022,12 +1193,12 @@ class HaliosGuard:
                         response_evaluation = await self.evaluate(buffer_messages, "response")
 
                         # Use check_violations to respect guardrail policies
-                        violation_result = await self.check_violations(response_evaluation)
-                        if violation_result.action == ViolationAction.BLOCK:
-                            logger.warning("Response blocked during streaming: %d violations", len(violation_result.violations or []))
+                        action, violations = await self.check_violations(response_evaluation)
+                        if action == ViolationAction.BLOCK:
+                            logger.warning("Response blocked during streaming: %d violations", len(violations))
                             yield {
                                 "type": "blocked",
-                                "violations": violation_result.violations or [],
+                                "violations": violations,
                                 "message": "Response blocked by guardrails during streaming"
                             }
                             return
@@ -1042,12 +1213,12 @@ class HaliosGuard:
                 response_evaluation = await self.evaluate(buffer_messages, "response")
                 
                 # Use check_violations to respect guardrail policies
-                violation_result = await self.check_violations(response_evaluation)
-                if violation_result.action == ViolationAction.BLOCK:
-                    logger.warning("Response blocked after completion: %d violations", len(violation_result.violations or []))
+                action, violations = await self.check_violations(response_evaluation)
+                if action == ViolationAction.BLOCK:
+                    logger.warning("Response blocked after completion: %d violations", len(violations))
                     yield {
                         "type": "blocked",
-                        "violations": violation_result.violations or [],
+                        "violations": violations,
                         "message": "Response blocked by guardrails"
                     }
                     return
@@ -1064,6 +1235,134 @@ class HaliosGuard:
         # Note: We don't close shared HTTP clients here as they're managed by the pool
         # and may be reused by other HaliosGuard instances
         pass
+
+    def scan_text(self, text: str, detailed: bool = False) -> Union[str, ScanResult]:
+        """
+        Synchronous method to scan a single text string for guardrail violations.
+
+        This method is designed for use in synchronous contexts like PySpark UDFs
+        where async methods cannot be used. It uses synchronous HTTP requests
+        throughout for maximum compatibility.
+
+        Args:
+            text: The text content to scan
+            detailed: If True, return ScanResult object with full metadata.
+                     If False, return simple status string (default: False)
+
+        Returns:
+            Union[str, ScanResult]: Either status string or detailed ScanResult object
+
+        Usage:
+            # Simple status (for PySpark UDFs)
+            def scan_udf(text_col):
+                return udf(lambda text: guard.scan_text(text), StringType())
+            df.withColumn("status", scan_udf(col("text")))
+
+            # Detailed results (for data storage)
+            result = guard.scan_text("hello world", detailed=True)
+            # result.response_id, result.violations, etc.
+        """
+        try:
+            # Check credentials
+            if not self.api_key:
+                error_msg = "API key not provided. Set HALIOS_API_KEY environment variable or pass api_key parameter."
+                logger.error(f"Error in scan_text: {error_msg}")
+                status = f"error: {error_msg}"
+                if detailed:
+                    return ScanResult(status=status)
+                else:
+                    return status
+
+            # Convert text to OpenAI message format
+            messages = [{"role": "user", "content": text}]
+
+            # Make synchronous HTTP request
+            import httpx
+            with httpx.Client(
+                base_url=self.base_url,
+                timeout=30.0,
+                headers={"X-HALIOS-API-KEY": self.api_key}
+            ) as http_client:
+
+                # Make the API request
+                url = f"{self.base_url}/api/v3/agents/{self.agent_id}/evaluate"
+                payload = {
+                    "messages": messages,
+                    "invocation_type": "request"
+                }
+
+                response = http_client.post(url, json=payload)
+                response.raise_for_status()
+                evaluation_data = response.json()
+
+                # Create ScanResult from response
+                evaluation_result = ScanResult.from_evaluation_response(evaluation_data, "unknown")
+
+                # Check violations synchronously
+                action, violations = self._check_violations_sync(evaluation_result)
+
+                if action == ViolationAction.BLOCK:
+                    status = f"blocked: {', '.join([v.guardrail_type for v in violations])}"
+                else:
+                    status = "safe"
+
+                if detailed:
+                    evaluation_result.status = status
+                    return evaluation_result
+                else:
+                    return status
+
+        except GuardrailViolation as e:
+            status = f"blocked: {', '.join([v.guardrail_type for v in e.violations])}"
+            if detailed:
+                return ScanResult(status=status, violations=e.violations)
+            else:
+                return status
+        except Exception as ex:
+            logger.error(f"Error in scan_text: {ex}")
+            status = f"error: {str(ex)}"
+            if detailed:
+                return ScanResult(status=status)
+            else:
+                return status
+
+    def _check_violations_sync(self, guardrail_result: Union[Dict, ScanResult]) -> tuple[ViolationAction, List[Violation]]:
+        """
+        Synchronous version of check_violations for scan_text method
+        """
+        if not guardrail_result:
+            return (ViolationAction.PASS, [])
+
+        # Handle ScanResult input
+        if isinstance(guardrail_result, ScanResult):
+            # Check if any guardrails were triggered
+            guardrails_triggered = guardrail_result.guardrails_triggered or 0
+            if guardrails_triggered > 0 and guardrail_result.violations:
+                violations = guardrail_result.violations
+
+                # Check guardrail policies for each violation type
+                actions = []
+                for violation in violations:
+                    guardrail_type = violation.guardrail_type
+                    policy_action = self.guardrail_policies.get(guardrail_type)
+
+                    if policy_action == GuardrailPolicy.RECORD_ONLY:
+                        actions.append(ViolationAction.ALLOW_OVERRIDE)
+                    elif policy_action == GuardrailPolicy.BLOCK:
+                        actions.append(ViolationAction.BLOCK)
+                    else:
+                        # No policy specified, block by default
+                        actions.append(ViolationAction.BLOCK)
+
+                # Determine overall action: BLOCK takes precedence over ALLOW_OVERRIDE
+                if ViolationAction.BLOCK in actions:
+                    final_action = ViolationAction.BLOCK
+                else:
+                    final_action = ViolationAction.ALLOW_OVERRIDE
+
+                return (final_action, violations)
+
+        return (ViolationAction.PASS, [])
 
     def _ensure_http_client_for_testing(self):
         """Ensure HTTP client is initialized for testing purposes"""
@@ -1259,12 +1558,12 @@ def guarded_chat_completion(
                         request_result = await guard_client.evaluate(messages, "request")
                         request_time = time.time() - request_start
 
-                        if (await guard_client.check_violations(request_result)).action == ViolationAction.BLOCK:
-                            violation_result = await guard_client.check_violations(request_result)
+                        if (await guard_client.check_violations(request_result))[0] == ViolationAction.BLOCK:
+                            action, violations = await guard_client.check_violations(request_result)
                             
                             violation = GuardrailViolation(
                                 violation_type="request",
-                                violations=violation_result.violations or [],
+                                violations=violations,
                                 blocked_content=str(messages),
                                 timing={'request_guardrail_time': request_time}
                             )
@@ -1287,12 +1586,12 @@ def guarded_chat_completion(
                         response_result = await guard_client.evaluate(full_conversation, "response")
                         response_time = time.time() - response_start
 
-                        if (await guard_client.check_violations(response_result)).action == ViolationAction.BLOCK:
-                            violation_result = await guard_client.check_violations(response_result)
+                        if (await guard_client.check_violations(response_result))[0] == ViolationAction.BLOCK:
+                            action, violations = await guard_client.check_violations(response_result)
                             
                             violation = GuardrailViolation(
                                 violation_type="response",
-                                violations=violation_result.violations or [],
+                                violations=violations,
                                 blocked_content=str(response_message),
                                 timing={
                                     'request_guardrail_time': request_time,

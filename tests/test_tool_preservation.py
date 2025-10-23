@@ -173,7 +173,7 @@ class TestToolPreservation:
 
             assert result.result.name == "REQUEST_BLOCKED"
             assert len(result.request_violations) == 1
-            assert result.request_violations[0]["type"] == "content_policy"
+            assert result.request_violations[0].guardrail_type == "content_policy"
 
     @pytest.mark.asyncio
     async def test_decorator_with_response_violation(self, mock_guardrail_response_success, mock_guardrail_response_violation):
@@ -220,7 +220,7 @@ class TestToolPreservation:
 
             assert result.result.name == "RESPONSE_BLOCKED"
             assert len(result.response_violations) == 1
-            assert result.response_violations[0]["type"] == "content_policy"
+            assert result.response_violations[0].guardrail_type == "content_policy"
 
     def test_decorator_initialization(self):
         """Test decorator initialization with various parameters"""

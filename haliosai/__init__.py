@@ -12,7 +12,6 @@ from .client import (
     GuardrailViolation,
     ViolationAction,
     GuardrailPolicy,
-    ViolationResult,
     # Main unified decorator
     guarded_chat_completion,
     # Utility functions
@@ -22,8 +21,6 @@ from .config import setup_logging
 # OpenAI Agents Framework Integration (optional)
 try:
     from .openai import (
-        RemoteInputGuardrail,
-        RemoteOutputGuardrail,
         HaliosInputGuardrail,
         HaliosOutputGuardrail,
     )
@@ -42,7 +39,6 @@ __all__ = [
     "GuardrailViolation",
     "ViolationAction",
     "GuardrailPolicy",
-    "ViolationResult",
     # Main decorator (recommended)
     "guarded_chat_completion",
     # Configuration
@@ -52,8 +48,6 @@ __all__ = [
 # Add OpenAI Agents Framework guardrails if available
 if _OPENAI_AGENTS_AVAILABLE:
     __all__.extend([
-        "RemoteInputGuardrail",
-        "RemoteOutputGuardrail", 
         "HaliosInputGuardrail",
         "HaliosOutputGuardrail",
     ])

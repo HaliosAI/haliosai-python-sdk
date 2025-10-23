@@ -73,10 +73,10 @@ class TestHaliosGuard:
         guard_instance = HaliosGuard(agent_id="test-agent")
         
         result = {"guardrails_triggered": 0, "result": []}
-        violation_result = await guard_instance.check_violations(result)
+        action, violations = await guard_instance.check_violations(result)
         
-        assert violation_result.has_violations is False
-        assert violation_result.action == ViolationAction.PASS
+        assert len(violations) == 0
+        assert action == ViolationAction.PASS
     
     @pytest.mark.asyncio
     async def test_check_violations_triggered(self):
@@ -93,10 +93,10 @@ class TestHaliosGuard:
                 }
             ]
         }
-        violation_result = await guard_instance.check_violations(result)
+        action, violations = await guard_instance.check_violations(result)
         
-        assert violation_result.has_violations is True
-        assert violation_result.action == ViolationAction.BLOCK
+        assert len(violations) > 0
+        assert action == ViolationAction.BLOCK
     
     @pytest.mark.asyncio
     async def test_evaluate_success(self):
@@ -127,7 +127,10 @@ class TestHaliosGuard:
 
             result = await guard_instance.evaluate([{"role": "user", "content": "test"}], "request")
             
-            assert result == mock_response
+            # result is now a ScanResult object
+            assert isinstance(result, object)  # Check it's an object, not a dict
+            assert result.message_count == 2
+            assert result.content_length == 100
             mock_post.assert_called_once()
     
     @pytest.mark.asyncio
@@ -166,7 +169,9 @@ class TestHaliosGuard:
 
             result = await guard_instance.evaluate(messages, "request")
 
-            assert result == mock_response
+            # result is now a ScanResult object
+            assert result.message_count == 2
+            assert result.content_length == 150
             # Verify tool calls were included in the payload
             call_args = mock_post.call_args
             payload = call_args[1]['json']

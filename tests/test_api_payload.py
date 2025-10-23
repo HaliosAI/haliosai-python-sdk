@@ -122,7 +122,9 @@ class TestApiPayload:
 
             result = await guard.evaluate(messages, "request")
 
-            assert result == mock_response
+            # result is now a ScanResult object, verify its attributes
+            assert result.message_count == 2
+            assert result.content_length == 150
             # Verify the API was called with the correct payload
             call_args = mock_post.call_args
             payload = call_args[1]['json']
