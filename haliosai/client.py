@@ -24,6 +24,8 @@ import time
 import logging
 import inspect
 import warnings
+import secrets
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Callable, Optional, Union
 from functools import wraps
 from enum import Enum
@@ -51,7 +53,7 @@ _http_client_pool: Dict[str, httpx.AsyncClient] = {}
 _http_client_pool_lock = asyncio.Lock()
 
 
-async def _get_shared_http_client(base_url: str, timeout: float = 30.0) -> httpx.AsyncClient:
+async def _get_shared_http_client(base_url: str, timeout: float = 30.0, headers: Optional[Dict[str, str]] = None) -> httpx.AsyncClient:
     """
     Get or create a shared HTTP client for the given base URL
 
@@ -71,13 +73,19 @@ async def _get_shared_http_client(base_url: str, timeout: float = 30.0) -> httpx
         or when _cleanup_http_client_pool() is called explicitly.
     """
     async with _http_client_pool_lock:
-        if base_url not in _http_client_pool:
-            _http_client_pool[base_url] = httpx.AsyncClient(
+        # Use base_url + headers as key to allow different header configurations
+        pool_key = (base_url, tuple(sorted(headers.items())) if headers else None)
+        if pool_key not in _http_client_pool:
+            client_headers = {"User-Agent": "haliosai-sdk/1.0"}
+            if headers:
+                client_headers.update(headers)
+            _http_client_pool[pool_key] = httpx.AsyncClient(
                 base_url=base_url,
-                timeout=timeout
+                timeout=timeout,
+                headers=client_headers
             )
-            logger.debug(f"Created shared HTTP client for {base_url}")
-        return _http_client_pool[base_url]
+            logger.debug(f"Created shared HTTP client for {base_url} with headers: {client_headers}")
+        return _http_client_pool[pool_key]
 
 
 async def _cleanup_http_client_pool():
@@ -118,6 +126,149 @@ class GuardrailPolicy(Enum):
     """Enum representing guardrail policy actions for specific guardrail types"""
     RECORD_ONLY = "record_only"        # Log violations but allow request to proceed
     BLOCK = "block"                    # Block request when violations are detected
+
+
+def _generate_trace_id() -> str:
+    """Create a W3C-style trace id (32 hex chars)."""
+    return secrets.token_hex(16)
+
+
+def _generate_span_id() -> str:
+    """Create a W3C-style span id (16 hex chars)."""
+    return secrets.token_hex(8)
+
+
+def _validate_trace_id(trace_id: str) -> bool:
+    """
+    Validate a trace-id against W3C Trace Context specification.
+    
+    Requirements:
+    - Exactly 32 hexadecimal characters (0-9, a-f)
+    - Lowercase recommended
+    - Cannot be all zeros
+    
+    Args:
+        trace_id: The trace-id to validate
+        
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    import re
+    if not trace_id or not isinstance(trace_id, str):
+        return False
+    
+    # Must be exactly 32 hex characters
+    if not re.match(r'^[0-9a-fA-F]{32}$', trace_id):
+        return False
+    
+    # Cannot be all zeros
+    if trace_id.lower() == '00000000000000000000000000000000':
+        return False
+    
+    return True
+
+
+@dataclass
+class TraceContext:
+    """Trace metadata propagated across guardrail calls."""
+
+    trace_id: str
+    conversation_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
+    span_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def create(
+        cls,
+        trace_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "TraceContext":
+        # Validate custom trace_id if provided
+        if trace_id:
+            if not _validate_trace_id(trace_id):
+                logger.warning(
+                    f"Invalid trace_id format provided: '{trace_id}'. "
+                    f"Trace IDs must be exactly 32 hexadecimal characters (W3C Trace Context spec). "
+                    f"Auto-generating a valid trace_id instead. "
+                    f"Hint: Use hashlib.sha256('your-session-id'.encode()).hexdigest()[:32] for custom IDs."
+                )
+                trace_id = None  # Fall back to auto-generation
+            else:
+                # Normalize to lowercase
+                trace_id = trace_id.lower()
+        
+        return cls(
+            trace_id=trace_id or _generate_trace_id(),
+            conversation_id=conversation_id,
+            parent_span_id=parent_span_id,
+            span_id=span_id,
+            metadata=metadata,
+        )
+
+
+@dataclass
+class SpanContext:
+    """Span metadata for guardrail evaluations."""
+
+    span_id: str
+    span_name: str
+    parent_span_id: Optional[str] = None
+    attributes: Dict[str, Any] = field(default_factory=dict)
+    start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    end_time: Optional[datetime] = None
+
+    @classmethod
+    def create(
+        cls,
+        span_name: str,
+        parent_span_id: Optional[str] = None,
+        attributes: Optional[Dict[str, Any]] = None,
+    ) -> "SpanContext":
+        return cls(
+            span_id=_generate_span_id(),
+            span_name=span_name,
+            parent_span_id=parent_span_id,
+            attributes=attributes or {},
+        )
+
+    def finish(self):
+        """Mark the span as finished by recording end_time."""
+        self.end_time = datetime.now(timezone.utc)
+
+    def to_payload(self, trace_context: TraceContext) -> Dict[str, Any]:
+        # Use span_id from TraceContext if provided (for predictable IDs from proxy),
+        # otherwise use the auto-generated one from SpanContext
+        span_id = trace_context.span_id or self.span_id
+        
+        # Use parent_span_id from TraceContext if provided (for proxy-controlled hierarchy),
+        # otherwise use the one from SpanContext
+        parent_span_id = trace_context.parent_span_id or self.parent_span_id
+        
+        payload: Dict[str, Any] = {
+            "trace_id": trace_context.trace_id,
+            "span_id": span_id,
+            "span_name": self.span_name,
+            "parent_span_id": parent_span_id,
+            "span_attributes": self.attributes or {},
+            "start_time": self.start_time.isoformat(),
+        }
+
+        if self.end_time:
+            payload["end_time"] = self.end_time.isoformat()
+            duration = (self.end_time - self.start_time).total_seconds() * 1000.0
+            payload["duration_ms"] = int(duration)
+
+        if trace_context.conversation_id:
+            payload["conversation_id"] = trace_context.conversation_id
+        
+        if trace_context.metadata is not None:
+            payload["metadata"] = trace_context.metadata
+
+        return payload
 
 
 @dataclass
@@ -175,6 +326,12 @@ class ScanResult:
     content_length: Optional[int] = None
     guardrails_configured: Optional[List[str]] = None
     message_count: Optional[int] = None
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    span_name: Optional[str] = None
+    span_attributes: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         pass  # No longer need to initialize violations list
@@ -196,7 +353,13 @@ class ScanResult:
             "content_length": self.content_length,
             "guardrails_configured": self.guardrails_configured,
             "message_count": self.message_count,
-            "violations": [v.to_dict() for v in self.violations]
+            "violations": [v.to_dict() for v in self.violations],
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+            "parent_span_id": self.parent_span_id,
+            "conversation_id": self.conversation_id,
+            "span_name": self.span_name,
+            "span_attributes": self.span_attributes,
         }
 
     def get(self, key: str, default=None):
@@ -207,6 +370,7 @@ class ScanResult:
     def from_evaluation_response(cls, evaluation_result: Dict, status: str) -> "ScanResult":
         """Create ScanResult from evaluation API response"""
         request_meta = evaluation_result.get("request", {})
+        trace_meta = evaluation_result.get("trace", {})
 
         return cls(
             status=status,
@@ -223,6 +387,12 @@ class ScanResult:
             content_length=request_meta.get("content_length"),
             guardrails_configured=request_meta.get("guardrails_configured", []),
             message_count=request_meta.get("message_count"),
+            trace_id=trace_meta.get("trace_id"),
+            span_id=trace_meta.get("span_id"),
+            parent_span_id=trace_meta.get("parent_span_id"),
+            conversation_id=trace_meta.get("conversation_id"),
+            span_name=trace_meta.get("span_name"),
+            span_attributes=trace_meta.get("span_attributes"),
             violations=[
                 Violation(
                     guardrail_uuid=r.get("guardrail_uuid"),
@@ -259,7 +429,13 @@ class ScanResult:
             processing_mode=data.get("processing_mode"),
             content_length=data.get("content_length"),
             guardrails_configured=data.get("guardrails_configured", []),
-            message_count=data.get("message_count")
+            message_count=data.get("message_count"),
+            trace_id=data.get("trace_id"),
+            span_id=data.get("span_id"),
+            parent_span_id=data.get("parent_span_id"),
+            conversation_id=data.get("conversation_id"),
+            span_name=data.get("span_name"),
+            span_attributes=data.get("span_attributes"),
         )
 
 
@@ -338,11 +514,22 @@ class HaliosGuard:
         over direct HaliosGuard instantiation for better maintainability.
     """
 
-    def __init__(self, agent_id: str, api_key: Optional[str] = None, base_url: Optional[str] = None,
-                 parallel: bool = False, streaming: bool = False,
-                 stream_buffer_size: Optional[int] = None, stream_check_interval: Optional[float] = None,
-                 guardrail_timeout: float = 5.0, http_client: Optional[httpx.AsyncClient] = None,
-                 guardrail_policies: Optional[Dict[str, GuardrailPolicy]] = None):
+    def __init__(
+        self,
+        agent_id: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        parallel: bool = False,
+        streaming: bool = False,
+        stream_buffer_size: Optional[int] = None,
+        stream_check_interval: Optional[float] = None,
+        guardrail_timeout: float = 5.0,
+        http_client: Optional[httpx.AsyncClient] = None,
+        guardrail_policies: Optional[Dict[str, GuardrailPolicy]] = None,
+        trace_context: Optional[TraceContext] = None,
+        trace_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ):
         """
         Initialize unified HaliosGuard with comprehensive configuration options
 
@@ -418,6 +605,15 @@ class HaliosGuard:
             self.stream_check_interval = stream_check_interval
         
         self.guardrail_timeout = guardrail_timeout
+        # Trace/span management
+        self.trace_context = trace_context
+        # create_trace removed; behavior: trace_context > trace_id > auto-create on enter
+        self._span_stack: List[str] = []
+        self._last_span_id: Optional[str] = None
+        # Allow passing a top-level trace id during construction
+        if trace_id:
+            self.trace_context = TraceContext.create(trace_id=trace_id)
+
         # Validate guardrail policies
         if guardrail_policies:
             for guardrail_type, policy in guardrail_policies.items():
@@ -427,17 +623,113 @@ class HaliosGuard:
 
         self.guardrail_policies = guardrail_policies or {}  # Default empty dict
 
+
         # HTTP client management - uses shared pool for connection reuse
         self.http_client = http_client  # Will be initialized lazily from shared pool
         self._http_client_base_url = base_url or os.getenv("HALIOS_BASE_URL", "https://api.halios.ai")
+        self._http_client_headers = headers
 
     async def _get_http_client(self) -> httpx.AsyncClient:
         """Lazily get or create shared HTTP client"""
         if self.http_client is None:
-            self.http_client = await _get_shared_http_client(self._http_client_base_url, 30.0)
+            self.http_client = await _get_shared_http_client(
+                self._http_client_base_url, 
+                30.0, 
+                self._http_client_headers
+            )
         return self.http_client
 
-    async def evaluate(self, messages: List[Dict], invocation_type: str = "request") -> ScanResult:
+    def _resolve_trace_context(self, trace_context: Optional[TraceContext]) -> TraceContext:
+        """Ensure a trace context exists and cache it on the guard instance.
+
+        If a `trace_context` is provided, use it. Otherwise if a top-level trace was set
+        during construction it will be used. If none of the above exists, we create a
+        new TraceContext (so each request/response can still be individually traced).
+        """
+        if trace_context:
+            self.trace_context = trace_context
+
+        if self.trace_context is None:
+            # Create a new trace id for this session/request if none exists
+            self.trace_context = TraceContext.create()
+
+        return self.trace_context
+
+    def _build_trace_payload(
+        self,
+        invocation_type: str,
+        trace_context: Optional[TraceContext] = None,
+        span_name: Optional[str] = None,
+        span_attributes: Optional[Dict[str, Any]] = None,
+    ) -> tuple[TraceContext, SpanContext, Dict[str, Any]]:
+        resolved_trace = self._resolve_trace_context(trace_context)
+
+        # Parent span preference: explicitly active span on stack -> last stack id -> resolved_trace.parent_span_id
+        parent = self._span_stack[-1] if self._span_stack else (self._last_span_id or resolved_trace.parent_span_id)
+
+        span_ctx = SpanContext.create(
+            span_name=span_name or f"guardrail.evaluation.{invocation_type}",
+            parent_span_id=parent,
+            attributes={
+                "invocation_type": invocation_type,
+                **(span_attributes or {}),
+            },
+        )
+
+        payload = span_ctx.to_payload(resolved_trace)
+        self._last_span_id = span_ctx.span_id
+        return resolved_trace, span_ctx, payload
+
+    async def _evaluate_with_trace(
+        self,
+        messages: List[Dict],
+        invocation_type: str,
+        trace_context: Optional[TraceContext] = None,
+        span_name: Optional[str] = None,
+        span_attributes: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Call evaluate with trace metadata when supported.
+
+        Some legacy tests/mocks patch evaluate with a reduced signature. In those cases
+        we gracefully fall back to calling evaluate without trace/span kwargs.
+
+        Additionally, automatically create a default span for this invocation when a
+        caller hasn't explicitly started one. This ensures request/response guardrail
+        evaluations are always represented as spans under the active trace.
+        """
+        # If no active span is present, create a short-lived span for this evaluation
+        own_span_created = False
+        if not span_name and not self._span_stack:
+            # Give it an informative name; it's short-lived and will be the parent for nested ops
+            span_name = f"guardrail.evaluation.{invocation_type}"
+            own_span_created = True
+
+        try:
+            return await self.evaluate(
+                messages,
+                invocation_type,
+                trace_context=trace_context,
+                span_name=span_name,
+                span_attributes=span_attributes,
+            )
+        except TypeError as exc:
+            logger.debug("evaluate() mock does not accept trace/span kwargs; falling back", exc_info=exc)
+            return await self.evaluate(messages, invocation_type)
+        finally:
+            if own_span_created:
+                # mark the created span as completed (no explicit end time available here)
+                # no-op for now, but keep API consistent for future span tracking
+                pass
+
+    async def evaluate(
+        self,
+        messages: List[Dict],
+        invocation_type: str = "request",
+        trace_context: Optional[TraceContext] = None,
+        span_name: Optional[str] = None,
+        span_attributes: Optional[Dict[str, Any]] = None,
+    ) -> ScanResult:
         """
         Evaluate messages against configured guardrails
 
@@ -487,15 +779,29 @@ class HaliosGuard:
 
         url = f"{self.base_url}/api/v3/agents/{self.agent_id}/evaluate"
 
+        resolved_trace, span_ctx, trace_payload = self._build_trace_payload(
+            invocation_type=invocation_type,
+            trace_context=trace_context,
+            span_name=span_name,
+            span_attributes=span_attributes,
+        )
+
         payload = {
             "messages": messages,
-            "invocation_type": invocation_type
+            "invocation_type": invocation_type,
+            "trace_context": trace_payload,  # Backend expects "trace_context" not "trace"
         }
 
         headers = {
             "X-HALIOS-API-KEY": self.api_key,
             "Content-Type": "application/json"
         }
+
+        # Debug log to verify trace_id is in outgoing payload
+        logger.debug(
+            f"SDK sending evaluate request with trace_id={resolved_trace.trace_id}, "
+            f"span_id={span_ctx.span_id}, invocation_type={invocation_type}"
+        )
 
         try:
             http_client = await self._get_http_client()
@@ -516,7 +822,15 @@ class HaliosGuard:
             else:
                 status = "safe"
 
-            return ScanResult.from_evaluation_response(api_result, status)
+            scan_result = ScanResult.from_evaluation_response(api_result, status)
+            # Attach trace metadata locally even if API omits it
+            scan_result.trace_id = resolved_trace.trace_id
+            scan_result.conversation_id = resolved_trace.conversation_id
+            scan_result.span_id = span_ctx.span_id
+            scan_result.parent_span_id = span_ctx.parent_span_id
+            scan_result.span_name = span_ctx.span_name
+            scan_result.span_attributes = span_ctx.attributes
+            return scan_result
 
         except httpx.HTTPError as e:
             logger.error(f"HTTP error during guardrail evaluation: {e}")
@@ -782,7 +1096,12 @@ class HaliosGuard:
 
         return (ViolationAction.PASS, [])
 
-    async def validate_request(self, messages: List[Dict]) -> Union[Dict, ScanResult]:
+    async def validate_request(
+        self,
+        messages: List[Dict],
+        trace_context: Optional[TraceContext] = None,
+        span_attributes: Optional[Dict[str, Any]] = None,
+    ) -> Union[Dict, ScanResult]:
         """
         Validate request messages against guardrails and raise exception if blocked
 
@@ -810,7 +1129,12 @@ class HaliosGuard:
                 # Handle blocked request
                 print(f"Request blocked: {e}")
         """
-        evaluation_result = await self.evaluate(messages, "request")
+        evaluation_result = await self.evaluate(
+            messages,
+            "request",
+            trace_context=trace_context,
+            span_attributes=span_attributes,
+        )
         action, violations = await self.check_violations(evaluation_result)
 
         if action == ViolationAction.BLOCK:
@@ -823,7 +1147,12 @@ class HaliosGuard:
 
         return evaluation_result
 
-    async def validate_response(self, messages: List[Dict]) -> Union[Dict, ScanResult]:
+    async def validate_response(
+        self,
+        messages: List[Dict],
+        trace_context: Optional[TraceContext] = None,
+        span_attributes: Optional[Dict[str, Any]] = None,
+    ) -> Union[Dict, ScanResult]:
         """
         Validate response messages against guardrails and raise exception if blocked
 
@@ -851,7 +1180,12 @@ class HaliosGuard:
                 # Handle blocked response
                 print(f"Response blocked: {e}")
         """
-        evaluation_result = await self.evaluate(messages, "response")
+        evaluation_result = await self.evaluate(
+            messages,
+            "response",
+            trace_context=trace_context,
+            span_attributes=span_attributes,
+        )
         action, violations = await self.check_violations(evaluation_result)
 
         if action == ViolationAction.BLOCK:
@@ -864,8 +1198,14 @@ class HaliosGuard:
 
         return evaluation_result
 
-    async def guarded_call_parallel(self, messages: List[Dict], llm_func: Callable,
-                                   *args, **kwargs) -> GuardedResponse:
+    async def guarded_call_parallel(
+        self,
+        messages: List[Dict],
+        llm_func: Callable,
+        *args,
+        trace_context: Optional[TraceContext] = None,
+        **kwargs,
+    ) -> GuardedResponse:
         """
         Perform guarded LLM call with parallel processing optimization
 
@@ -880,9 +1220,12 @@ class HaliosGuard:
         start_time = time.time()
         logger.debug("Starting parallel guarded call")
 
+        # Ensure trace context is available for both request/response spans
+        self._resolve_trace_context(trace_context)
+
         # Create tasks for parallel execution
         request_guardrails_task = asyncio.create_task(
-            self.evaluate(messages, "request"),
+            self._evaluate_with_trace(messages, "request", trace_context=self.trace_context),
             name="request_guardrails"
         )
         llm_task = asyncio.create_task(
@@ -984,7 +1327,11 @@ class HaliosGuard:
             # Extract response message for guardrail evaluation (includes tool calls)
             response_message = self.extract_response_message(llm_response)
             full_conversation = messages + [response_message]
-            response_evaluation = await self.evaluate(full_conversation, "response")
+            response_evaluation = await self._evaluate_with_trace(
+                full_conversation,
+                "response",
+                trace_context=self.trace_context,
+            )
 
             response_time = time.time() - response_start
 
@@ -1094,8 +1441,14 @@ class HaliosGuard:
 
         return str(response)
 
-    async def guarded_stream_parallel(self, messages: List[Dict], llm_func: Callable,
-                                     *args, **kwargs):
+    async def guarded_stream_parallel(
+        self,
+        messages: List[Dict],
+        llm_func: Callable,
+        *args,
+        trace_context: Optional[TraceContext] = None,
+        **kwargs,
+    ):
         """
         Stream LLM response with parallel guardrail evaluation
 
@@ -1116,9 +1469,11 @@ class HaliosGuard:
                     self.stream_buffer_size if self.stream_buffer_size else "disabled",
                     f"{self.stream_check_interval:.2f}s" if self.stream_check_interval else "disabled")
 
+        self._resolve_trace_context(trace_context)
+
         # Start request guardrail evaluation
         request_guardrails_task = asyncio.create_task(
-            self.evaluate(messages, "request"),
+            self._evaluate_with_trace(messages, "request", trace_context=self.trace_context),
             name="request_guardrails"
         )
 
@@ -1190,7 +1545,11 @@ class HaliosGuard:
                         logger.debug("Evaluating guardrails: %d chars accumulated (%.2fs since last check)",
                                    len(buffer_since_last_check), time_since_last_check)
                         
-                        response_evaluation = await self.evaluate(buffer_messages, "response")
+                        response_evaluation = await self._evaluate_with_trace(
+                            buffer_messages,
+                            "response",
+                            trace_context=self.trace_context,
+                        )
 
                         # Use check_violations to respect guardrail policies
                         action, violations = await self.check_violations(response_evaluation)
@@ -1210,7 +1569,11 @@ class HaliosGuard:
             # Final guardrail check on complete response if buffer has remaining content
             if buffer:
                 buffer_messages = messages + [{"role": "assistant", "content": buffer}]
-                response_evaluation = await self.evaluate(buffer_messages, "response")
+                response_evaluation = await self._evaluate_with_trace(
+                    buffer_messages,
+                    "response",
+                    trace_context=self.trace_context,
+                )
                 
                 # Use check_violations to respect guardrail policies
                 action, violations = await self.check_violations(response_evaluation)
@@ -1371,15 +1734,49 @@ class HaliosGuard:
             import httpx
             self.http_client = httpx.AsyncClient(
                 base_url=self._http_client_base_url,
-                timeout=30.0
+                timeout=30.0,
+                headers={"User-Agent": "haliosai-sdk/1.0"}
             )
 
     async def __aenter__(self):
         # Initialize HTTP client when entering context
         if self.http_client is None:
             self.http_client = await _get_shared_http_client(self._http_client_base_url, 30.0)
+        # Ensure a session-level trace exists when entering a context manager.
+        # Precedence: explicit trace_context passed earlier > trace_id provided at construction
+        # > auto-create a new TraceContext for this session.
+        if self.trace_context is None:
+            self._resolve_trace_context(None)
         return self
 
+    # ---- Span management utilities ----
+    def start_span(self, span_name: str, attributes: Optional[Dict[str, Any]] = None) -> SpanContext:
+        """Start a new span and make it the active parent for subsequent evaluations.
+
+        Returns the created SpanContext which can be finished via `end_span`.
+        """
+        parent = self._span_stack[-1] if self._span_stack else (self._last_span_id or (self.trace_context.parent_span_id if self.trace_context else None))
+        span = SpanContext.create(span_name=span_name, parent_span_id=parent, attributes=attributes)
+        self._span_stack.append(span.span_id)
+        self._last_span_id = span.span_id
+        return span
+
+    def end_span(self, span: SpanContext) -> Dict[str, Any]:
+        """Finish a span and return its payload for logging or transmission.
+
+        If the span is currently active it will be popped off the stack and the
+        previous active span will be restored as the parent.
+        """
+        span.finish()
+        # Attempt to remove from stack if present
+        if self._span_stack and self._span_stack[-1] == span.span_id:
+            self._span_stack.pop()
+            self._last_span_id = self._span_stack[-1] if self._span_stack else None
+        else:
+            # If it is deeper in the stack, remove it gracefully
+            if span.span_id in self._span_stack:
+                self._span_stack.remove(span.span_id)
+        return span.to_payload(self.trace_context if self.trace_context else TraceContext.create())
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.cleanup()
 
@@ -1467,6 +1864,8 @@ def guarded_chat_completion(
                 else:
                     raise ValueError("Function must receive 'messages' as first argument or keyword argument")
 
+                trace_context = kwargs.pop("trace_context", None)
+
                 # Create unified HaliosGuard instance and stream
                 config = {
                     'agent_id': agent_id,
@@ -1480,9 +1879,18 @@ def guarded_chat_completion(
                     'guardrail_policies': guardrail_policies
                 }
                 async with HaliosGuard(**config) as guard_client:
+                    if trace_context:
+                        guard_client.trace_context = trace_context
+                        guard_client._last_span_id = trace_context.parent_span_id
                     # Remove messages from args since we've extracted it and pass it separately
                     remaining_args = args[1:] if args and isinstance(args[0], list) else args
-                    async for event in guard_client.guarded_stream_parallel(messages, func, *remaining_args, **kwargs):
+                    async for event in guard_client.guarded_stream_parallel(
+                        messages,
+                        func,
+                        *remaining_args,
+                        trace_context=trace_context,
+                        **kwargs,
+                    ):
                         # Check for violation events and throw exceptions for consistency
                         if isinstance(event, dict) and event.get('type') == 'blocked':
                             violations = event.get('violations', [])
@@ -1509,6 +1917,8 @@ def guarded_chat_completion(
                 else:
                     raise ValueError("Function must receive 'messages' as first argument or keyword argument")
 
+                trace_context = kwargs.pop("trace_context", None)
+
                 # Use unified HaliosGuard for both concurrent and sequential processing
                 config = {
                     'agent_id': agent_id,
@@ -1520,10 +1930,19 @@ def guarded_chat_completion(
                     'guardrail_policies': guardrail_policies
                 }
                 async with HaliosGuard(**config) as guard_client:
+                    if trace_context:
+                        guard_client.trace_context = trace_context
+                        guard_client._last_span_id = trace_context.parent_span_id
                     if concurrent_guardrail_processing:
                         # Remove messages from args since we've extracted it and pass it separately
                         remaining_args = args[1:] if args and isinstance(args[0], list) else args
-                        result = await guard_client.guarded_call_parallel(messages, func, *remaining_args, **kwargs)
+                        result = await guard_client.guarded_call_parallel(
+                            messages,
+                            func,
+                            *remaining_args,
+                            trace_context=trace_context,
+                            **kwargs,
+                        )
                         if result.result != ExecutionResult.SUCCESS:
                             violations = result.request_violations or result.response_violations or []
                             
@@ -1555,7 +1974,11 @@ def guarded_chat_completion(
                         # Sequential processing: check request, then call LLM, then check response
                         logger.debug("Running request guardrails sequentially")
                         request_start = time.time()
-                        request_result = await guard_client.evaluate(messages, "request")
+                        request_result = await guard_client._evaluate_with_trace(
+                            messages,
+                            "request",
+                            trace_context=trace_context,
+                        )
                         request_time = time.time() - request_start
 
                         if (await guard_client.check_violations(request_result))[0] == ViolationAction.BLOCK:
@@ -1583,7 +2006,11 @@ def guarded_chat_completion(
                         response_start = time.time()
                         response_message = guard_client.extract_response_message(response)
                         full_conversation = messages + [response_message]
-                        response_result = await guard_client.evaluate(full_conversation, "response")
+                        response_result = await guard_client._evaluate_with_trace(
+                            full_conversation,
+                            "response",
+                            trace_context=trace_context,
+                        )
                         response_time = time.time() - response_start
 
                         if (await guard_client.check_violations(response_result))[0] == ViolationAction.BLOCK:

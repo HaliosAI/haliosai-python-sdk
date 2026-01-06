@@ -12,6 +12,8 @@ from .client import (
     GuardrailViolation,
     ViolationAction,
     GuardrailPolicy,
+    TraceContext,
+    SpanContext,
     # Main unified decorator
     guarded_chat_completion,
     # Utility functions
@@ -39,6 +41,8 @@ __all__ = [
     "GuardrailViolation",
     "ViolationAction",
     "GuardrailPolicy",
+    "TraceContext",
+    "SpanContext",
     # Main decorator (recommended)
     "guarded_chat_completion",
     # Configuration
