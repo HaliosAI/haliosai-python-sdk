@@ -1,57 +1,115 @@
-"""
-HaliosAI SDK - AI Guardrails for LLM Applications
+"""HaliosAI SDK — guardrails, tracing, and evaluations for LLM applications.
 
-A powerful Python SDK for integrating AI guardrails with Large Language Model applications.
-Provides simple patching, parallel processing, streaming support, and multi-agent configurations.
+Usage::
+
+    from haliosai import HaliosClient, guarded
+
+    # Client-based API
+    async with HaliosClient(agent_id="my-agent") as client:
+        result = await client.evaluate(messages=[...])
+
+    # Decorator-based API
+    @guarded(agent_id="my-agent")
+    async def call_llm(messages):
+        return await openai.chat.completions.create(model="gpt-4o", messages=messages)
 """
 
-from .client import (
-    HaliosGuard,
+from __future__ import annotations
+
+from ._version import __version__
+
+# Core client
+from .client import HaliosClient
+
+# Exceptions
+from .exceptions import (
+    ConfigError,
+    CohortTagValidationError,
+    EvaluationError,
+    GuardrailTriggered,
+    HaliosAPIError,
+    HaliosError,
+    TimeoutError,
+)
+
+# Guardrails (decorator + helpers)
+from .guardrails import (
+    extract_response_message,
+    guarded,
+)
+
+# Tracing
+from .tracing import TracedConversation
+
+# Evaluations
+from .evaluations import EvalRun
+from .cohorts import CohortCollection, CohortValidator
+from .ingest import BulkEvalPusher, BulkIngester, BulkIngestResult
+from .integrations import HaliosSparkEvaluator
+
+# Types (commonly used in user code)
+from .types import (
+    CohortDefinition,
+    CohortValidateResult,
+    CheckExecutionProgress,
+    CheckExecutionResponse,
+    CheckResult,
+    EvaluateResult,
     ExecutionResult,
     GuardedResponse,
-    GuardrailViolation,
-    ViolationAction,
+    IngestTaskStatus,
     GuardrailPolicy,
-    TraceContext,
-    SpanContext,
-    # Main unified decorator
-    guarded_chat_completion,
-    # Utility functions
+    PaginatedResult,
+    RunMetadataResult,
+    SpanResponse,
+    TraceDetail,
+    TraceResponse,
+    Violation,
+    ViolationAction,
 )
-from .config import setup_logging
-
-# OpenAI Agents Framework Integration (optional)
-try:
-    from .openai import (
-        HaliosInputGuardrail,
-        HaliosOutputGuardrail,
-    )
-    _OPENAI_AGENTS_AVAILABLE = True
-except ImportError:
-    _OPENAI_AGENTS_AVAILABLE = False
-
-__author__ = "HaliosLabs"
-__email__ = "support@halios.ai"
 
 __all__ = [
-    # Core classes
-    "HaliosGuard",
+    # Version
+    "__version__",
+    # Client
+    "HaliosClient",
+    # Exceptions
+    "HaliosError",
+    "ConfigError",
+    "HaliosAPIError",
+    "CohortTagValidationError",
+    "GuardrailTriggered",
+    "EvaluationError",
+    "TimeoutError",
+    # Guardrails
+    "guarded",
+    "extract_response_message",
+    # Tracing
+    "TracedConversation",
+    # Evaluations
+    "EvalRun",
+    "CohortCollection",
+    "CohortValidator",
+    "BulkIngester",
+    "BulkEvalPusher",
+    "BulkIngestResult",
+    "HaliosSparkEvaluator",
+    # Types
+    "CohortDefinition",
+    "CohortValidateResult",
+    "EvaluateResult",
+    "Violation",
+    "CheckResult",
+    "GuardrailPolicy",
+    "ViolationAction",
     "ExecutionResult",
     "GuardedResponse",
-    "GuardrailViolation",
-    "ViolationAction",
-    "GuardrailPolicy",
-    "TraceContext",
-    "SpanContext",
-    # Main decorator (recommended)
-    "guarded_chat_completion",
-    # Configuration
-    "setup_logging",
+    "IngestTaskStatus",
+    "RunMetadataResult",
+    "SpanResponse",
+    "TraceResponse",
+    "TraceDetail",
+    "CheckExecutionResponse",
+    "CheckExecutionProgress",
+    "PaginatedResult",
 ]
-
-# Add OpenAI Agents Framework guardrails if available
-if _OPENAI_AGENTS_AVAILABLE:
-    __all__.extend([
-        "HaliosInputGuardrail",
-        "HaliosOutputGuardrail",
-    ])
