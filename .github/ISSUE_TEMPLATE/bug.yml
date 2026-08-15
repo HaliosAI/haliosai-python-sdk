@@ -1,0 +1,21 @@
+name: Bug report
+description: Report reproducible SDK behavior
+title: "[Bug]: "
+body:
+  - type: textarea
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Include a minimal example and sanitized error output.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Version
+      description: Installed `haliosai` version and Python version.
+    validations:
+      required: true

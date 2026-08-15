@@ -1,115 +1,70 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "haliosai"
-version = "1.1.0"
-description = "Advanced Guardrails and Evaluation SDK for AI Agents"
+dynamic = ["version"]
+description = "Small explicit Python API for Halios guardrails and evaluations"
 readme = "README.md"
-license = { text = "Apache-2.0" }
-authors = [
-    {name = "HaliosLabs", email = "support@halios.ai"}
-]
-maintainers = [
-    {name = "HaliosLabs", email = "support@halios.ai"}
-]
+license = "Apache-2.0"
+authors = [{ name = "HaliosLabs", email = "support@halios.ai" }]
+requires-python = ">=3.10"
 keywords = [
-    "ai", "guardrails", "llm", "safety", "content-moderation", 
-    "openai", "anthropic", "agents", "streaming", "parallel", "reliability",
-    "ai security", "llm security", "llm guardrails", "ai guardrails","ai agent evaluation",
-    "eval","prompt injection","jailbreak", "sensitive data detection","pii detection","mcp security"
+    "ai", "guardrails", "llm", "safety", "evaluation", "testing",
+    "opentelemetry", "observability", "ci-cd",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Testing",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Security",
 ]
-requires-python = ">=3.9"
 dependencies = [
     "httpx>=0.24.0",
-    "typing-extensions>=4.0.0",
-    "pydantic>=2.0.0",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.0.0"]
-agents = ["openai-agents>=0.3.0"]
-spark = ["pyspark>=3.3"]
-cli = ["typer>=0.9", "rich>=13"]
 dev = [
-    "pytest>=7.0.0",
+    "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
     "respx>=0.21.0",
-    "openai>=1.0.0",
     "ruff>=0.1.0",
-    "mypy>=1.0.0",
-    "twine>=4.0.0",
-    "build>=0.10.0",
+    "mypy>=1.0",
+    "build>=0.10",
+    "twine>=4.0",
 ]
-all = [
-    "haliosai[openai,agents,spark,cli]"
-]
-
-[project.scripts]
-halios = "haliosai.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/HaliosAI/haliosai-python-sdk"
+Homepage = "https://halios.ai"
 Documentation = "https://docs.halios.ai"
 Repository = "https://github.com/HaliosAI/haliosai-python-sdk"
 Changelog = "https://github.com/HaliosAI/haliosai-python-sdk/releases"
-"Bug Reports" = "https://github.com/HaliosAI/haliosai-python-sdk/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "haliosai._version.__version__" }
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["haliosai*"]
+include = ["haliosai"]
 
 [tool.setuptools.package-data]
 haliosai = ["py.typed"]
 
-[tool.black]
-line-length = 100
-target-version = ['py39', 'py310', 'py311', 'py312']
-include = '\.pyi?$'
-
-[tool.isort]
-profile = "black"
-line_length = 100
-multi_line_output = 3
-
-[tool.mypy]
-python_version = "3.9"
-strict = false
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-
-[[tool.mypy.overrides]]
-module = [
-    "openai.*",
-    "anthropic.*",
-    "agents.*",
-]
-ignore_missing_imports = true
-
 [tool.pytest.ini_options]
-minversion = "7.0"
-addopts = "-ra -q --strict-markers"
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
 asyncio_mode = "auto"
-markers = [
-    "integration: marks tests as integration tests",
-]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
