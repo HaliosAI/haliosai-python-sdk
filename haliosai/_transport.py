@@ -1,22 +1,19 @@
-"""HTTP transport layer with retry, backoff, and connection pooling."""
+"""Small async HTTP transport used by the public SDK."""
 
 from __future__ import annotations
 
-import logging
-import time
+import asyncio
 from typing import Any
 
 import httpx
 
 from .exceptions import HaliosAPIError
 
-logger = logging.getLogger("haliosai")
-
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 class HaliosTransport:
-    """Async + sync HTTP transport with retry and shared connection pooling.
+    """Async HTTP transport with retry and connection pooling.
 
     Notes on API-versioning / base_url:
         - The `base_url` parameter may optionally include an API-version suffix
@@ -73,9 +70,6 @@ class HaliosTransport:
             self._default_headers.update(headers)
 
         self._async_client: httpx.AsyncClient | None = None
-        self._sync_client: httpx.Client | None = None
-
-    # -- Async -----------------------------------------------------------
 
     def _get_async_client(self) -> httpx.AsyncClient:
         if self._async_client is None or self._async_client.is_closed:
@@ -103,9 +97,7 @@ class HaliosTransport:
 
         for attempt in range(self.max_retries + 1):
             try:
-                response = await client.request(
-                    method, path, json=json, params=params
-                )
+                response = await client.request(method, path, json=json, params=params)
                 if response.status_code < 400:
                     return response
                 if response.status_code not in _RETRYABLE_STATUS_CODES:
@@ -121,11 +113,6 @@ class HaliosTransport:
 
             if attempt < self.max_retries:
                 delay = self.backoff_factor * (2**attempt)
-                logger.debug(
-                    "Retrying %s %s (attempt %d/%d) in %.1fs",
-                    method, path, attempt + 1, self.max_retries, delay,
-                )
-                import asyncio
                 await asyncio.sleep(delay)
 
         if isinstance(last_exc, HaliosAPIError):
@@ -134,61 +121,6 @@ class HaliosTransport:
             f"Request failed after {self.max_retries + 1} attempts: {last_exc}",
             status_code=None,
         )
-
-    # -- Sync ------------------------------------------------------------
-
-    def _get_sync_client(self) -> httpx.Client:
-        if self._sync_client is None or self._sync_client.is_closed:
-            self._sync_client = httpx.Client(
-                base_url=self.base_url,
-                headers=self._default_headers,
-                timeout=self.timeout,
-            )
-        return self._sync_client
-
-    def request_sync(
-        self,
-        method: str,
-        path: str,
-        *,
-        json: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> httpx.Response:
-        """Make a synchronous HTTP request with retry logic."""
-        client = self._get_sync_client()
-        last_exc: Exception | None = None
-
-        for attempt in range(self.max_retries + 1):
-            try:
-                response = client.request(method, path, json=json, params=params)
-                if response.status_code < 400:
-                    return response
-                if response.status_code not in _RETRYABLE_STATUS_CODES:
-                    self._raise_api_error(response)
-                last_exc = HaliosAPIError(
-                    f"HTTP {response.status_code}",
-                    status_code=response.status_code,
-                    detail=response.text,
-                )
-            except httpx.TransportError as exc:
-                last_exc = exc
-
-            if attempt < self.max_retries:
-                delay = self.backoff_factor * (2**attempt)
-                logger.debug(
-                    "Retrying %s %s (attempt %d/%d) in %.1fs",
-                    method, path, attempt + 1, self.max_retries, delay,
-                )
-                time.sleep(delay)
-
-        if isinstance(last_exc, HaliosAPIError):
-            raise last_exc
-        raise HaliosAPIError(
-            f"Request failed after {self.max_retries + 1} attempts: {last_exc}",
-            status_code=None,
-        )
-
-    # -- Helpers ---------------------------------------------------------
 
     @staticmethod
     def _raise_api_error(response: httpx.Response) -> None:
@@ -201,6 +133,8 @@ class HaliosTransport:
         if isinstance(body, dict):
             detail = body.get("detail") or body.get("error")
             code = body.get("code")
+            if isinstance(detail, dict):
+                code = code or detail.get("code")
         raise HaliosAPIError(
             f"HTTP {response.status_code}: {detail or response.text}",
             status_code=response.status_code,
@@ -209,14 +143,7 @@ class HaliosTransport:
             response_body=body,
         )
 
-    # -- Lifecycle -------------------------------------------------------
-
     async def aclose(self) -> None:
         if self._async_client and not self._async_client.is_closed:
             await self._async_client.aclose()
             self._async_client = None
-
-    def close(self) -> None:
-        if self._sync_client and not self._sync_client.is_closed:
-            self._sync_client.close()
-            self._sync_client = None

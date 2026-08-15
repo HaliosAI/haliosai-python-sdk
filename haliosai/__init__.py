@@ -1,115 +1,24 @@
-"""HaliosAI SDK — guardrails, tracing, and evaluations for LLM applications.
+"""Small explicit Python client for Halios guardrails and trace evaluations.
 
-Usage::
-
-    from haliosai import HaliosClient, guarded
-
-    # Client-based API
-    async with HaliosClient(agent_id="my-agent") as client:
-        result = await client.evaluate(messages=[...])
-
-    # Decorator-based API
-    @guarded(agent_id="my-agent")
-    async def call_llm(messages):
-        return await openai.chat.completions.create(model="gpt-4o", messages=messages)
+Application telemetry belongs to stock OpenTelemetry. This package makes authenticated Halios API
+calls and does not install or configure an OpenTelemetry SDK.
 """
 
-from __future__ import annotations
-
 from ._version import __version__
-
-# Core client
-from .client import HaliosClient
-
-# Exceptions
-from .exceptions import (
-    ConfigError,
-    CohortTagValidationError,
-    EvaluationError,
-    GuardrailTriggered,
-    HaliosAPIError,
-    HaliosError,
-    TimeoutError,
-)
-
-# Guardrails (decorator + helpers)
-from .guardrails import (
-    extract_response_message,
-    guarded,
-)
-
-# Tracing
-from .tracing import TracedConversation
-
-# Evaluations
-from .evaluations import EvalRun
-from .cohorts import CohortCollection, CohortValidator
-from .ingest import BulkEvalPusher, BulkIngester, BulkIngestResult
-from .integrations import HaliosSparkEvaluator
-
-# Types (commonly used in user code)
-from .types import (
-    CohortDefinition,
-    CohortValidateResult,
-    CheckExecutionProgress,
-    CheckExecutionResponse,
-    CheckResult,
-    EvaluateResult,
-    ExecutionResult,
-    GuardedResponse,
-    IngestTaskStatus,
-    GuardrailPolicy,
-    PaginatedResult,
-    RunMetadataResult,
-    SpanResponse,
-    TraceDetail,
-    TraceResponse,
-    Violation,
-    ViolationAction,
-)
+from .client import HaliosClient as Client
+from .exceptions import ConfigError, HaliosAPIError, HaliosError, HaliosTimeoutError
+from .types import CheckResult, EvaluateResult, EvaluationRun, TraceDetail, Violation
 
 __all__ = [
-    # Version
     "__version__",
-    # Client
-    "HaliosClient",
-    # Exceptions
+    "Client",
     "HaliosError",
     "ConfigError",
     "HaliosAPIError",
-    "CohortTagValidationError",
-    "GuardrailTriggered",
-    "EvaluationError",
-    "TimeoutError",
-    # Guardrails
-    "guarded",
-    "extract_response_message",
-    # Tracing
-    "TracedConversation",
-    # Evaluations
-    "EvalRun",
-    "CohortCollection",
-    "CohortValidator",
-    "BulkIngester",
-    "BulkEvalPusher",
-    "BulkIngestResult",
-    "HaliosSparkEvaluator",
-    # Types
-    "CohortDefinition",
-    "CohortValidateResult",
+    "HaliosTimeoutError",
     "EvaluateResult",
     "Violation",
     "CheckResult",
-    "GuardrailPolicy",
-    "ViolationAction",
-    "ExecutionResult",
-    "GuardedResponse",
-    "IngestTaskStatus",
-    "RunMetadataResult",
-    "SpanResponse",
-    "TraceResponse",
+    "EvaluationRun",
     "TraceDetail",
-    "CheckExecutionResponse",
-    "CheckExecutionProgress",
-    "PaginatedResult",
 ]
