@@ -17,9 +17,20 @@ jobs:
           python-version: "3.12"
       - name: Verify version
         run: |
-          expected="${GITHUB_REF_NAME#v}"
-          package="$(python -c 'from haliosai._version import __version__; print(__version__)')"
-          test "$package" = "$expected"
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          ref = os.environ["GITHUB_REF_NAME"]
+          expected = ref[1:] if ref.startswith("v") else ref
+
+          content = Path("haliosai/_version.py").read_text(encoding="utf-8")
+          version = re.search(r'__version__\s*=\s*"([^"]+)"', content).group(1)
+
+          assert version == expected, f"Package version {version} != {expected}"
+          print(f"Verified release version {expected} matches haliosai.")
+          PY
       - run: python -m pip install build twine
       - run: python -m build
       - run: python -m twine check dist/*

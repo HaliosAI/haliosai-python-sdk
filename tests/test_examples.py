@@ -8,6 +8,7 @@ from examples.runtime_guardrail import guarded_answer
 
 def test_otel_python_example():
     """Verify that otel_python.py executes and registers standard OpenTelemetry provider."""
+    pytest.importorskip("opentelemetry")
     from opentelemetry import trace
 
     import examples.otel_python as otel_mod
