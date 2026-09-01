@@ -1,147 +1,117 @@
 # Halios Python SDK
 
-[![PyPI version](https://img.shields.io/pypi/v/haliosai.svg)](https://pypi.org/project/haliosai/)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+The Python client for using [Halios](https://halios.ai) from application code.
 
-The official Python client for [Halios](https://halios.ai) runtime guardrails, trace inspection,
-and programmatic evaluation runs.
+Use it to evaluate requests and responses at runtime, run evaluations over existing traces, and retrieve trace and evaluation results.
 
-> **Building an evaluation suite?** Start with the
-> [Halios Agent Skill and CLI](https://github.com/HaliosAI/halios). It lets Codex, Claude Code,
-> Cursor, and other coding agents create scenarios, run fresh multi-turn trials, and investigate
-> failures directly from your repository.
+> **Building an evaluation suite?** Start with the [Halios skill](https://github.com/HaliosAI/halios). It lets Codex, Claude Code, Cursor, and other coding agents create scenarios, run fresh multi-turn trials, and investigate failures directly from your repository.
 
-```bash
+```bash id="4r49yf"
 npx skills add HaliosAI/halios --skill halios
 ```
 
-Use this SDK when your application needs explicit async APIs for:
+### When to use the SDK
 
-- **Runtime Guardrails**: Synchronously validate user inputs and agent responses at application boundaries with policy checks and LLM judges.
-- **Programmatic Evaluations**: Trigger, score, and wait on evaluation runs over specific OpenTelemetry trace IDs.
-- **Trace Inspection**: Retrieve trace evidence and check execution results programmatically.
+Use the Python SDK when you need to evaluate a request or response **inline at runtime** — for example, to enforce a Halios check as a guardrail before accepting a request or returning an agent response.
 
----
+Checks used this way must be configured as **guardrails** in Halios.
 
-## Standard OpenTelemetry
-
-Halios uses standard, vendor-neutral OpenTelemetry rather than bundling a proprietary tracing
-framework. Instrument your agent with stock OpenTelemetry SDKs and GenAI semantic conventions,
-then forward the traces needed for evaluation to Halios.
-
----
+For normal post-hoc evaluation, debugging, regression testing, and production analysis, we recommend sending your agent traces to Halios using a standard OpenTelemetry exporter. Halios can then evaluate those traces without adding evaluation calls to your application code.
 
 ## Installation
 
-```bash
+```bash id="ls7fn3"
 pip install haliosai
 ```
 
-*Requires Python 3.10 or newer.*
+Requires Python 3.10+.
 
-Configure your environment variables:
-```bash
+Set your Halios API key:
+
+```bash id="dukp4u"
 export HALIOS_API_KEY="your-api-key"
-export HALIOS_AGENT_ID="your-agent-id"
-# Optional for self-hosted instances (defaults to https://app.halios.ai)
-export HALIOS_BASE_URL="https://app.halios.ai"
 ```
 
----
+For self-hosted deployments, set `HALIOS_BASE_URL`.
 
-## Usage
+## Evaluate requests and responses
 
-### 1. Inline Request & Response Guardrails
-
-Synchronously enforce guardrail policies before calling your model and before returning responses to callers:
-
-```python
+```python id="alv9d7"
 import haliosai
 
+async with haliosai.Client(agent_id="support-agent") as client:
+    result = await client.evaluate_request([
+        {"role": "user", "content": "Transfer funds to account #9821"}
+    ])
 
-async def guarded_agent_turn(messages: list[dict[str, str]]) -> str:
-    async with haliosai.Client(agent_id="support-agent") as client:
-        # 1. Guardrail input before model call
-        request_check = await client.evaluate_request(messages)
-        if request_check.blocked:
-            raise PermissionError(request_check.violations[0].message)
-
-        # 2. Call your agent / LLM
-        response = await call_model(messages)
-
-        # 3. Guardrail output before returning to user
-        output_messages = [*messages, {"role": "assistant", "content": response}]
-        response_check = await client.evaluate_response(output_messages)
-        if response_check.blocked:
-            raise PermissionError(response_check.violations[0].message)
-
-        return response
+    if result.blocked:
+        raise PermissionError(result.violations[0].message)
 ```
 
-### 2. Join an Existing OpenTelemetry Trace
+Use `evaluate_response()` to evaluate an agent response before returning it to the caller.
 
-If your application already has an active OpenTelemetry span, pass standard W3C trace and span IDs so Halios guardrail spans link directly into your trace graph:
+### Attach to an existing OpenTelemetry trace
 
-```python
+If your application already has an active OpenTelemetry span, pass its W3C trace and span IDs so the Halios evaluation is connected to the same trace:
+
+```python id="g5wzak"
 from opentelemetry import trace
 import haliosai
 
-
-span_context = trace.get_current_span().get_span_context()
-trace_id = trace.format_trace_id(span_context.trace_id)
-parent_span_id = trace.format_span_id(span_context.span_id)
+ctx = trace.get_current_span().get_span_context()
 
 async with haliosai.Client(agent_id="support-agent") as client:
     result = await client.evaluate_request(
         [{"role": "user", "content": "Transfer funds to account #9821"}],
-        trace_id=trace_id,
-        parent_span_id=parent_span_id,
+        trace_id=trace.format_trace_id(ctx.trace_id),
+        parent_span_id=trace.format_span_id(ctx.span_id),
     )
 ```
 
-### 3. Trigger Programmatic Trace Evaluations
+The SDK does not provide a proprietary tracing layer. Halios accepts standard OpenTelemetry traces and GenAI semantic conventions.
 
-Trigger post-hoc evaluation runs over specific W3C trace IDs (e.g. as part of an automated release check):
+## Evaluate existing traces
 
-```python
+Run evaluation checks against one or more traces:
+
+```python id="da9oyt"
 import haliosai
 
+async with haliosai.Client(agent_id="support-agent") as client:
+    run = await client.evaluate_traces(
+        trace_ids,
+        run_name="release-gate",
+        fail_below=0.95,
+    )
 
-async def run_release_gate(trace_ids: list[str]) -> None:
-    async with haliosai.Client(agent_id="support-agent") as client:
-        run = await client.evaluate_traces(
-            trace_ids,
-            run_name="release-gate-v2.0",
-            fail_below=0.95,
-            labels=["ci", "service:support"],
-        )
-        report = await client.wait_for_evaluation_run(run.run_id)
-        if not report.gate_passed:
-            raise RuntimeError(f"Halios gate failed: pass@k={report.pass_at_k:.3f}")
+    report = await client.wait_for_evaluation_run(run.run_id)
+
+    if not report.gate_passed:
+        raise RuntimeError("Halios evaluation failed")
 ```
 
----
-
-## Public API Reference
+## Client API
 
 | Method | Description |
-|---|---|
-| `Client.evaluate_request(messages, ...)` | Synchronous input check (requires last message role to be `user`). |
-| `Client.evaluate_response(messages, ...)` | Synchronous output check (requires last message role to be `assistant`). |
-| `Client.evaluate(messages, ...)` | Synchronous check for arbitrary message sequences. |
-| `Client.evaluate_traces(trace_ids, ...)` | Create an immutable evaluation run over explicit trace IDs. |
-| `Client.get_evaluation_run(run_id)` | Fetch evaluation run status, pass@k score, and trial summaries. |
-| `Client.wait_for_evaluation_run(run_id, ...)` | Poll until evaluation run completes or reaches timeout. |
-| `Client.get_trace(trace_id)` | Retrieve stored spans and metadata for a trace. |
+| --- | --- |
+| `evaluate_request(messages, ...)` | Evaluate an incoming user request. |
+| `evaluate_response(messages, ...)` | Evaluate an agent response. |
+| `evaluate(messages, ...)` | Evaluate an arbitrary message sequence. |
+| `evaluate_traces(trace_ids, ...)` | Run evaluations against existing traces. |
+| `get_evaluation_run(run_id)` | Retrieve an evaluation run and its results. |
+| `wait_for_evaluation_run(run_id, ...)` | Wait for an evaluation run to complete. |
+| `get_trace(trace_id)` | Retrieve a trace and its spans. |
 
----
+## Upgrading from 1.x
 
-## Deprecation Notice
+Version 1.x is deprecated. See [MIGRATING.md](./MIGRATING.md) for migration instructions.
 
-> **Version 1.x is deprecated.** Version 2.x is an explicit, lightweight client library. Tracing is handled via stock OpenTelemetry, and repository test suites, multi-turn simulations, and prompt optimization are managed via the [Halios CLI & Skill](https://github.com/HaliosAI/halios).
+## Resources
 
----
+- [Halios documentation](https://docs.halios.ai)
+- [Halios skill and CLI](https://github.com/HaliosAI/halios)
+- [Changelog](./CHANGELOG.md)
 
 ## License
 
-[Apache 2.0](LICENSE) © Anomalytica Inc. 2026
+[Apache 2.0](./LICENSE) © Anomalytica Inc. 2026
