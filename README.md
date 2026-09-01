@@ -3,7 +3,19 @@
 [![PyPI version](https://img.shields.io/pypi/v/haliosai.svg)](https://pypi.org/project/haliosai/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-The official Python client library for [Halios](https://halios.ai). The `haliosai` SDK provides lightweight, explicit async APIs for:
+The official Python client for [Halios](https://halios.ai) runtime guardrails, trace inspection,
+and programmatic evaluation runs.
+
+> **Building an evaluation suite?** Start with the
+> [Halios Agent Skill and CLI](https://github.com/HaliosAI/halios). It lets Codex, Claude Code,
+> Cursor, and other coding agents create scenarios, run fresh multi-turn trials, and investigate
+> failures directly from your repository.
+
+```bash
+npx skills add HaliosAI/halios --skill halios
+```
+
+Use this SDK when your application needs explicit async APIs for:
 
 - **Runtime Guardrails**: Synchronously validate user inputs and agent responses at application boundaries with policy checks and LLM judges.
 - **Programmatic Evaluations**: Trigger, score, and wait on evaluation runs over specific OpenTelemetry trace IDs.
@@ -11,24 +23,11 @@ The official Python client library for [Halios](https://halios.ai). The `haliosa
 
 ---
 
-## Tracing Philosophy: Standard OpenTelemetry
+## Standard OpenTelemetry
 
-Unlike traditional AI observability tools, the Halios SDK **does not bundle a proprietary tracing framework** or require intrusive decorators in your codebase.
-
-Instead, Halios expects applications to use standard, vendor-neutral **OpenTelemetry**. You instrument your agent using stock OpenTelemetry SDKs and GenAI semantic conventions, forwarding traces to Halios. This keeps your production runtime vendor-neutral, portable, and free of vendor lock-in.
-
----
-
-## 💡 Recommended: Use the Halios Agent Skill & CLI
-
-For setting up OpenTelemetry telemetry, authoring test suites, simulating multi-turn scenarios, and gating CI pull requests, we recommend using the **[Halios Agent Skill & CLI](https://github.com/HaliosAI/halios)**.
-
-The Halios skill pairs with your AI coding agent (**Codex**, **Claude Code**, **Cursor**, etc.) to inspect your codebase, configure telemetry, and build complete evaluation suites in minutes:
-
-```bash
-# Install the Halios Agent Skill
-npx skills add HaliosAI/halios --skill halios
-```
+Halios uses standard, vendor-neutral OpenTelemetry rather than bundling a proprietary tracing
+framework. Instrument your agent with stock OpenTelemetry SDKs and GenAI semantic conventions,
+then forward the traces needed for evaluation to Halios.
 
 ---
 
